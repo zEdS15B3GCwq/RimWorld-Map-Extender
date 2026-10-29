@@ -41,6 +41,36 @@ def cmd_census(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grids(args: argparse.Namespace) -> int:
+    """Check that every map grid decodes and re-encodes losslessly; optionally render PNGs."""
+    from .grids import decode_blob, encode_blob, find_grids, map_size
+
+    tree = load_save(args.input)
+    failures = 0
+    for m in tree.getroot().find("game/maps"):
+        mid = f"Map_{m.findtext('uniqueID')}"
+        sx, sz = map_size(m)
+        print(f"== {mid} {sx}x{sz}")
+        for g in find_grids(m):
+            arr = g.array(sx, sz)
+            back = g.layout.to_bytes(arr)
+            text, deflated = encode_blob(back)
+            ok = back == g.data and decode_blob(text, deflated) == g.data
+            failures += not ok
+            layout = "bits" if g.layout.bits else f"{g.layout.itemsize}B"
+            print(f"  {'ok ' if ok else 'BAD'} {g.path:<62} {layout:>4} {arr.shape} "
+                  f"text {len(g.element.text.strip()):>6} -> {len(text.strip()):>6}")
+        if args.render:
+            from .render import render_map
+
+            out = Path(args.render) / mid
+            for line in render_map(m, out):
+                pass
+            print(f"  rendered -> {out}")
+    print("all grids round-trip" if not failures else f"{failures} grid(s) FAILED")
+    return 1 if failures else 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="mapext")
     sub = p.add_subparsers(required=True)
@@ -48,6 +78,10 @@ def main() -> int:
     cs.add_argument("input")
     cs.add_argument("output", help="markdown report path")
     cs.set_defaults(func=cmd_census)
+    gr = sub.add_parser("grids", help="verify grid decode/encode round trip, optionally render PNGs")
+    gr.add_argument("input")
+    gr.add_argument("--render", metavar="DIR", help="write one PNG per grid per map into DIR/<map>/")
+    gr.set_defaults(func=cmd_grids)
     rt = sub.add_parser("roundtrip", help="load and re-write a save unchanged, then compare bytes")
     rt.add_argument("input")
     rt.add_argument("output")

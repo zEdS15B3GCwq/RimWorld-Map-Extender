@@ -13,15 +13,16 @@ Goal: a Python tool that enlarges an existing colony map by rewriting a RimWorld
   - `Mods-decompiled/<Assembly>/`: ilspycmd output of the mods' 1.6 assemblies.
 - `mapext/`: the tool. `python -m mapext roundtrip <in> <out>` re-writes a save unchanged and checks it is byte-identical (the serializer mimics .NET XmlWriter: BOM, CRLF, tabs, `<x />`).
   - `python -m mapext census <in> <report.md>` lists every coordinate-like value and grid by path, labelled by the rules in `mapext/census.py`.
+  - `python -m mapext grids <in> [--render DIR]` checks every map grid decodes/re-encodes losslessly and renders PNGs.
 - `plan.md`: plan, findings and progress. Keep it up to date.
 - `out/` (git-ignored): generated saves and reports.
+- `.venv/`: Python 3.15 with lxml, numpy, pillow. Manage it with `uv pip --python .venv`.
+- `dotnet-tools.json`: local tool manifest (ilspycmd). Run as `dotnet tool run ilspycmd ...`.
 
 ## Assumptions
 
 - The same mod list is used for the target save and any donor saves.
 - Goal is padding the map; decode grid formats only as far as padding needs.
-- `.venv/`: Python 3.15 with lxml, numpy, pillow. Manage it with `uv pip --python .venv`.
-- `dotnet-tools.json`: local tool manifest (ilspycmd). Run as `dotnet tool run ilspycmd ...`.
 
 ## Rules
 

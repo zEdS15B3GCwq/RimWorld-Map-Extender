@@ -10,8 +10,8 @@ Environment and rules are in [CLAUDE.md](CLAUDE.md). This file tracks the plan, 
 |---|---|
 | 0. Setup + byte-identical round trip | ✅ done |
 | 1. Coordinate census | ✅ done (0 unknown paths in the sample save) |
-| 2. Grid codecs + PNG rendering | ⏳ next |
-| 3. Padding only (no new content) | ⏳ |
+| 2. Grid codecs + PNG rendering | ✅ done (all 72 grids in the sample save round-trip) |
+| 3. Padding only (no new content) | ⏳ next |
 | 4. Donor-map content for the border | ⏳ |
 | 5. CLI polish, safety checks, tests | ⏳ |
 
@@ -35,8 +35,13 @@ Path normalization: `game/maps/li` → `MAP`; every thing (element with `<def>` 
 
 The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntVec3 fields on a map are handled automatically; world-level values default to `unknown`.
 
-### 2. Grid codecs + rendering
-Decode/encode each grid format only as far as padding needs (reshape to `(sizeZ, sizeX)`, pad, flatten). Decoding followed by encoding must return the original bytes. Render layers as PNGs for visual checks.
+### 2. Grid codecs + rendering ✅
+`mapext/grids.py`, `mapext/render.py`; CLI `python -m mapext grids include/2.rws --render out/render`.
+- Format (`DataExposeUtility.LookByteArray`): raw Deflate (.NET `DeflateStream`, no zlib header; Python `zlib` with `wbits=-15`) → base64 → wrapped at 100 chars, with a line break before and after → `<labelDeflate>`. If deflating doesn't shrink the data, plain base64 goes in `<label>`. `GridRef.store()` renames the element when that choice changes.
+- Cell layout is inferred from the decoded length: `N*k` bytes = k-byte little-endian cells (u16 terrain/roof/snow/sand/deep resources/temperature/compressed things, u32 gas, 8 B river flow); `ceil(N/8)` bytes = bit-packed bools, LSB first (BoolGrid areas/pollution/Helixien, fog).
+- Python's deflate output is ~10% smaller than the game's, so the base64 text differs. The check is on the decoded bytes: decode → array → bytes → encode → decode must equal the original. **All 72 grids pass.**
+- Renders: one PNG per grid per map plus `things.png` (thing positions by category), north up. In Map_0, terrain, things, rock (compressed thing map) and roofs line up with each other.
+- `find_grids(map)` finds grids by decoding any blob whose size fits the map's cell count; `find_cell_lists(map)` finds the `<li>`-per-cell lists (MixedBiome).
 
 ### 3. Padding only
 Apply `(padW, padE, padS, padN)`: update `mapInfo/size`, pad grids with neutral values, shift `shift` paths by `(+padW, 0, +padS)`. Pad the MultiFloors basement (`Map_25`) identically. Check how the DeepRim lift links (`Map_23`). Test steps: pad 0 → 1 cell → real size, with an in-game load after each step.
@@ -106,6 +111,11 @@ MultiFloors, DeepRim, VEF core, SomeThingsFloat, ReGrowth core, Adaptive Storage
 - Not present in the sample save, so not verified yet: CellRect values (e.g. `layoutStructureSketches`, `landingBlockers`), `planManager` plans, `tempTerrain` cells.
 
 ### Open questions for Phase 3
-- Neutral pad values per grid: terrain def (by index into the save's def table?), roof none, fog fogged, MixedBiome `True`.
-- `temperatureCache` is stored per room group, not per cell. Check whether padding it is right or whether it can just be dropped and rebuilt.
-- Whether `compressedThingMapDeflate` needs anything beyond padding with 0.
+- Neutral pad values per grid:
+  - terrain: values are def `shortHash`es, so copy an existing hash, e.g. the most common edge terrain (or `mode="edge"`);
+  - roof, snow, sand, gas, pollution, deep resources, compressed things: 0 (none);
+  - fog: 0 for now (the sample save has no fog at all);
+  - areas: False (`trueCount` unchanged);
+  - MixedBiome: `True`.
+- `temperatureCache/temperatures` turns out to be per cell (u16, the room temperature written per cell; the game reads it back per room). Pad with `mode="edge"`.
+- `compressedThingMapDeflate`: pad with 0 (no compressible thing).
