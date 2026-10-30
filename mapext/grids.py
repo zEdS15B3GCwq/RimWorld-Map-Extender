@@ -7,7 +7,8 @@ RimWorld stores grids through `DataExposeUtility.LookByteArray`:
 - multi-byte cells are little-endian (u16 terrain/roof/snow/..., u32 gas);
 - bool grids (`LookBoolArray`: BoolGrid, fog) are bit-packed, LSB first, ceil(N/8) bytes.
 Cells are ordered `index = z * sizeX + x`, so a grid is an array of shape (sizeZ, sizeX) with
-row 0 at the south edge.
+row 0 at the south edge. Exception: `WaterInfo.riverFlowMap` (two floats per cell) is indexed
+`x * sizeZ + z`; `GridRef` transposes it so every array has the same orientation.
 
 We don't need to know what each value means to pad a grid, only its cell layout, which is
 inferred from the decoded length.
@@ -23,6 +24,7 @@ from lxml import etree
 DEFLATE_SUFFIX = "Deflate"
 _BLOB_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
 _DTYPES = {1: np.uint8, 2: np.dtype("<u2"), 4: np.dtype("<u4")}
+X_MAJOR_LABELS = {"riverFlowMap"}  # grids indexed x * sizeZ + z
 
 
 def decode_blob(text: str, deflated: bool) -> bytes:
@@ -68,6 +70,7 @@ class Layout:
         return buf.reshape(sz, sx, self.itemsize)  # unusual widths: keep raw bytes per cell
 
     def to_bytes(self, arr: np.ndarray) -> bytes:
+        arr = np.ascontiguousarray(arr)
         if self.bits:
             return np.packbits(arr.reshape(-1).astype(np.uint8), bitorder="little").tobytes()
         if self.itemsize in _DTYPES:
@@ -93,12 +96,23 @@ class GridRef:
     layout: Layout
     data: bytes
 
+    @property
+    def x_major(self) -> bool:
+        return self.label in X_MAJOR_LABELS
+
     def array(self, sx: int, sz: int) -> np.ndarray:
+        """The grid as (sizeZ, sizeX[, k]), row 0 south."""
+        if self.x_major:
+            return self.layout.to_array(self.data, sz, sx).swapaxes(0, 1)
         return self.layout.to_array(self.data, sx, sz)
 
+    def to_bytes(self, arr: np.ndarray) -> bytes:
+        """Inverse of `array`."""
+        return self.layout.to_bytes(arr.swapaxes(0, 1) if self.x_major else arr)
+
     def store(self, arr: np.ndarray) -> None:
-        """Re-encode `arr` into the element, renaming it if the deflate choice changes."""
-        data = self.layout.to_bytes(arr)
+        """Re-encode a (sizeZ, sizeX[, k]) array into the element, renaming it if the deflate choice changes."""
+        data = self.to_bytes(arr)
         text, deflated = encode_blob(data)
         self.element.text = text
         self.element.tag = self.label + DEFLATE_SUFFIX if deflated else self.label

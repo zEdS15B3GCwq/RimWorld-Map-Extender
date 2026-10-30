@@ -104,62 +104,49 @@ def _is_thing(el) -> bool:
     return el.find("def") is not None and el.find("id") is not None
 
 
-def run_census(tree) -> tuple[dict, dict]:
-    """Return (groups keyed by (path, kind), {map_id: (sizeX, sizeZ)})."""
-    root = tree.getroot()
+@dataclass
+class Value:
+    """One coordinate-like value (or grid) found by `iter_values`."""
+    element: etree._Element
+    path: str
+    kind: str
+    match: "re.Match | None"  # the PATTERNS match for coordinate kinds
+    map_id: str  # the map whose subtree holds the value, or "world"
+    thing_class: str | None
+
+
+def match_value(text: str, tag: str) -> tuple[str, "re.Match | None"] | None:
+    """Classify one leaf text as (kind, match), or None if it doesn't look map-related."""
+    for kind, rx in PATTERNS:
+        m = rx.match(text)
+        if m:
+            return kind, m
+    # LookByteArray writes "<label>Deflate"; all-zero grids compress to just a few dozen chars.
+    if BLOB_RE.match(text) and (tag.endswith("Deflate") or len(text) >= 64 and ("\n" in text or len(text) >= 200)):
+        return "blob", None
+    if INT_RE.match(text):
+        if SIZE_TAG_RE.match(tag):
+            return "size-int", None
+        if SUSPICIOUS_TAG_RE.search(tag):
+            return "int?", None
+    return None
+
+
+def map_index(root) -> tuple[dict, dict]:
+    """({map element: "Map_N"}, {"Map_N": (sizeX, sizeZ)})."""
     map_ids, map_sizes = {}, {}
     for m in root.find("game/maps"):
         mid = f"Map_{m.findtext('uniqueID')}"
         sx, _, sz = (int(v) for v in m.findtext("mapInfo/size").strip("()").split(","))
         map_ids[m] = mid
         map_sizes[mid] = (sx, sz)
+    return map_ids, map_sizes
+
+
+def iter_values(root):
+    """Yield a `Value` for every coordinate-like leaf, blob and one-<li>-per-cell list in the save."""
+    map_ids, map_sizes = map_index(root)
     cell_counts = {sx * sz for sx, sz in map_sizes.values()}
-    groups: dict[tuple[str, str], Group] = {}
-
-    def record(path, kind, value, map_id, thing_class, xz=None):
-        g = groups.get((path, kind))
-        if g is None:
-            g = groups[(path, kind)] = Group(kind)
-        in_bounds = None
-        if xz is not None and map_id in map_sizes:
-            sx, sz = map_sizes[map_id]
-            in_bounds = 0 <= xz[0] < sx and 0 <= xz[1] < sz
-        g.add(value, map_id, thing_class, xz, in_bounds)
-        return g
-
-    def classify_value(path, text, map_id, thing_class):
-        for kind, rx in PATTERNS:
-            m = rx.match(text)
-            if not m:
-                continue
-            if kind in ("IntVec3+map", "IntVec3"):
-                x, y, z = int(m[1]), int(m[2]), int(m[3])
-                target = map_id
-                if kind == "IntVec3+map" and m[4].startswith("Map_"):
-                    target = m[4]
-                if (x, y, z) == INVALID_IV3:
-                    record(path, kind, text, target, thing_class).invalid += 1
-                else:
-                    record(path, kind, text, target, thing_class, (x, z))
-            elif kind == "CellRect":
-                record(path, kind, text, map_id, thing_class, (int(m[1]), int(m[2])))
-            elif kind == "IntVec2":
-                record(path, kind, text, map_id, thing_class, (int(m[1]), int(m[2])))
-            elif kind == "Vector3":
-                record(path, kind, text, map_id, thing_class, (float(m[1]), float(m[3])))
-            else:
-                record(path, kind, text, map_id, thing_class, (float(m[1]), float(m[2])))
-            return
-        tag = path.rsplit("/", 1)[-1].split("[", 1)[0]
-        # LookByteArray writes "<label>Deflate"; all-zero grids compress to just a few dozen chars.
-        if BLOB_RE.match(text) and (tag.endswith("Deflate") or len(text) >= 64 and ("\n" in text or len(text) >= 200)):
-            record(path, "blob", f"{len(text)} chars", map_id, thing_class)
-            return
-        if INT_RE.match(text):
-            if SIZE_TAG_RE.match(tag):
-                record(path, "size-int", text, map_id, thing_class)
-            elif SUSPICIOUS_TAG_RE.search(tag):
-                record(path, "int?", text, map_id, thing_class)
 
     def walk(el, path, map_id, thing_class):
         for c in el:
@@ -179,15 +166,58 @@ def run_census(tree) -> tuple[dict, dict]:
             if len(c):
                 n_li = sum(1 for _ in c.iterchildren("li"))
                 if n_li in cell_counts:
-                    record(cpath, f"cell-list[{n_li}]", f"{n_li} <li>", cmap, cclass)
+                    yield Value(c, cpath, f"cell-list[{n_li}]", None, cmap, cclass)
                     continue
-                walk(c, cpath, cmap, cclass)
+                yield from walk(c, cpath, cmap, cclass)
                 continue
             text = (c.text or "").strip()
             if text:
-                classify_value(cpath, text, cmap, cclass)
+                found = match_value(text, cpath.rsplit("/", 1)[-1].split("[", 1)[0])
+                if found:
+                    yield Value(c, cpath, found[0], found[1], cmap, cclass)
 
-    walk(root, "", "world", None)
+    yield from walk(root, "", "world", None)
+
+
+def run_census(tree) -> tuple[dict, dict]:
+    """Return (groups keyed by (path, kind), {map_id: (sizeX, sizeZ)})."""
+    root = tree.getroot()
+    _, map_sizes = map_index(root)
+    groups: dict[tuple[str, str], Group] = {}
+
+    def record(path, kind, value, map_id, thing_class, xz=None):
+        g = groups.get((path, kind))
+        if g is None:
+            g = groups[(path, kind)] = Group(kind)
+        in_bounds = None
+        if xz is not None and map_id in map_sizes:
+            sx, sz = map_sizes[map_id]
+            in_bounds = 0 <= xz[0] < sx and 0 <= xz[1] < sz
+        g.add(value, map_id, thing_class, xz, in_bounds)
+        return g
+
+    for v in iter_values(root):
+        path, kind, m, map_id, cls = v.path, v.kind, v.match, v.map_id, v.thing_class
+        text = (v.element.text or "").strip()
+        if kind in ("IntVec3+map", "IntVec3"):
+            x, y, z = int(m[1]), int(m[2]), int(m[3])
+            target = m[4] if kind == "IntVec3+map" and m[4].startswith("Map_") else map_id
+            if (x, y, z) == INVALID_IV3:
+                record(path, kind, text, target, cls).invalid += 1
+            else:
+                record(path, kind, text, target, cls, (x, z))
+        elif kind in ("CellRect", "IntVec2"):
+            record(path, kind, text, map_id, cls, (int(m[1]), int(m[2])))
+        elif kind == "Vector3":
+            record(path, kind, text, map_id, cls, (float(m[1]), float(m[3])))
+        elif kind == "Vector2":
+            record(path, kind, text, map_id, cls, (float(m[1]), float(m[2])))
+        elif kind == "blob":
+            record(path, kind, f"{len(text)} chars", map_id, cls)
+        elif kind.startswith("cell-list"):
+            record(path, kind, f"{len(v.element)} <li>", map_id, cls)
+        else:
+            record(path, kind, text, map_id, cls)
     return groups, map_sizes
 
 

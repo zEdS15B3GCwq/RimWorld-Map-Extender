@@ -11,7 +11,7 @@ Environment and rules are in [CLAUDE.md](CLAUDE.md). This file tracks the plan, 
 | 0. Setup + byte-identical round trip | ✅ done |
 | 1. Coordinate census | ✅ done (0 unknown paths in the sample save) |
 | 2. Grid codecs + PNG rendering | ✅ done (all 72 grids in the sample save round-trip) |
-| 3. Padding only (no new content) | ⏳ next |
+| 3. Padding only (no new content) | 🧪 implemented, verified offline; awaiting in-game load tests |
 | 4. Donor-map content for the border | ⏳ |
 | 5. CLI polish, safety checks, tests | ⏳ |
 
@@ -43,8 +43,17 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - Renders: one PNG per grid per map plus `things.png` (thing positions by category), north up. In Map_0, terrain, things, rock (compressed thing map) and roofs line up with each other.
 - `find_grids(map)` finds grids by decoding any blob whose size fits the map's cell count; `find_cell_lists(map)` finds the `<li>`-per-cell lists (MixedBiome).
 
-### 3. Padding only
-Apply `(padW, padE, padS, padN)`: update `mapInfo/size`, pad grids with neutral values, shift `shift` paths by `(+padW, 0, +padS)`. Pad the MultiFloors basement (`Map_25`) identically. Check how the DeepRim lift links (`Map_23`). Test steps: pad 0 → 1 cell → real size, with an in-game load after each step.
+### 3. Padding only 🧪
+`mapext/pad.py`; CLI `python -m mapext pad <in> <out> [--map Map_0] [--all N] [--west N --east N --south N --north N]`.
+- The census walk is now a reusable generator (`census.iter_values`). `pad_save` classifies every value with `census.RULES` first and aborts on any `unknown` path before changing anything. Then:
+  - size: `mapInfo/size`, BoolGrid `mapSizeX`/`mapSizeZ`;
+  - grids: terrain `topGrid`/`underGrid` and `temperatureCache` are padded by copying the edge; every other grid gets 0 (none/False). MixedBiome `<li>` list: edge copy;
+  - shift: every value on a padded map, skipping `(-1000, -1000, -1000)`. CellRect shifts both corners. Vector3 keeps y and writes x/z as float32 with 9 significant digits, like the game;
+  - shift-if-map: history look targets by their `Map_N`; quest part cells by the part's `mapParent` (world object → `mapInfo/parent`) or a `map*` field naming a pawn (→ the map holding it); `cameraMap/camRootPos` when `currentMapIndex` is padded. Unresolvable valid values are reported and left alone (none in the sample saves).
+- Linked maps: the MultiFloors levels in the target's `MF_LevelMapComp/mapByLevel` (Map_25 for Map_0) get identical padding and must be the same size. The DeepRim map (Map_23) is untouched: `holeLocation` is an underground cell, and the lift on Map_0 is an ordinary shifted thing.
+- `verify_pad` (runs after every `pad` unless `--no-verify`) re-reads the output and checks: new sizes; every grid cropped back equals the original; every coordinate value equals the original or the original + offset, exactly where the rules say.
+- Results: pad 0 → value-identical to the input (only grid compression differs). Pads of 1, 25 (325×325), W3/S5 and, on the plans save, E10/N20 all verify; census on the 325×325 output has 0 unknown and 0 out-of-bounds values. 52k IntVec3, 3 Vector3, 18 world-level targets, 44 size fields, 51 grids + 1 cell list per run.
+- In-game test saves: `out/pad0.rws`, `out/pad1.rws`, `out/pad25.rws`, `out/pad_w3s5.rws`, `out/2pc_pad_e10n20.rws`. Load in order; first failure tells us what the offline checks miss.
 
 ### 4. Donor content
 The user generates donor saves with the same mod list. Copy terrain, grids and natural things (rock, ores, plants, filth) into the border; reassign thing IDs and bump `uniqueIDsManager`. Rock walls live in `compressedThingMapDeflate` (def `shortHash`; fine with the same mod list). Fog the new border.
@@ -113,12 +122,8 @@ MultiFloors, DeepRim, VEF core, SomeThingsFloat, ReGrowth core, Adaptive Storage
   - `Map.landingBlockers`: a `List<CellRect>` that Odyssey orbital and space maps use to block gravship landing. It falls under the `MAP/` shift rule. Phase 3 has to shift both corners of a CellRect: `(minX+W,minZ+S,maxX+W,maxZ+S)`.
   - Temporary terrain (ice from freezing, floods, lava): it lives in `terrainGrid/tempGridDeflate`, which is already padded as a grid.
 
-### Open questions for Phase 3
-- Neutral pad values per grid:
-  - terrain: values are def `shortHash`es, so copy an existing hash, e.g. the most common edge terrain (or `mode="edge"`);
-  - roof, snow, sand, gas, pollution, deep resources, compressed things: 0 (none);
-  - fog: 0 for now (the sample save has no fog at all);
-  - areas: False (`trueCount` unchanged);
-  - MixedBiome: `True`.
-- `temperatureCache/temperatures` turns out to be per cell (u16, the room temperature written per cell; the game reads it back per room). Pad with `mode="edge"`.
-- `compressedThingMapDeflate`: pad with 0 (no compressible thing).
+### Grid findings from Phase 3
+- `WaterInfo.riverFlowMap` (2 floats per cell) is indexed `x * sizeZ + z`, unlike every other grid. On a square map the size check can't tell; `GridRef` now transposes it (`grids.X_MAJOR_LABELS`). The padded render matches the river terrain.
+- `temperatureCache/temperatures` is per cell (room temperature written into each of the room's cells). Padded by edge copy.
+- Fog is padded with 0 (unfogged); the sample saves have no fog. Phase 4 should fog the border.
+- Terrain edge copy makes stripes in the border (water and roads stretch outward). It's a placeholder until donor content.

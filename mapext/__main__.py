@@ -53,7 +53,7 @@ def cmd_grids(args: argparse.Namespace) -> int:
         print(f"== {mid} {sx}x{sz}")
         for g in find_grids(m):
             arr = g.array(sx, sz)
-            back = g.layout.to_bytes(arr)
+            back = g.to_bytes(arr)
             text, deflated = encode_blob(back)
             ok = back == g.data and decode_blob(text, deflated) == g.data
             failures += not ok
@@ -71,6 +71,33 @@ def cmd_grids(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_pad(args: argparse.Namespace) -> int:
+    from .pad import Padding, pad_save
+
+    src, dst = Path(args.input), Path(args.output)
+    if src.resolve() == dst.resolve():
+        print("Refusing to overwrite the input file.", file=sys.stderr)
+        return 2
+    a = args.all
+    pad = Padding(*(a if v is None else v for v in (args.west, args.east, args.south, args.north)))
+    tree = load_save(src)
+    report = pad_save(tree, args.map, pad)
+    print(report.format())
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    write_save(tree, dst)
+    print(f"-> {dst}")
+    if args.no_verify:
+        return 0
+    from .pad import verify_pad
+
+    problems = verify_pad(load_save(src), load_save(dst), args.map, pad)
+    for p in problems:
+        print("  PROBLEM:", p)
+    print("verified: grids crop back to the original, every coordinate shifted exactly once" if not problems
+          else f"{len(problems)} problem(s)")
+    return 1 if problems else 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="mapext")
     sub = p.add_subparsers(required=True)
@@ -82,6 +109,15 @@ def main() -> int:
     gr.add_argument("input")
     gr.add_argument("--render", metavar="DIR", help="write one PNG per grid per map into DIR/<map>/")
     gr.set_defaults(func=cmd_grids)
+    pd = sub.add_parser("pad", help="pad a map (and its MultiFloors levels) with empty border cells")
+    pd.add_argument("input")
+    pd.add_argument("output")
+    pd.add_argument("--map", default="Map_0", help="map id, e.g. Map_0 (default)")
+    pd.add_argument("--all", type=int, default=0, metavar="N", help="cells to add on every side not given below")
+    for side in ("west", "east", "south", "north"):
+        pd.add_argument(f"--{side}", type=int, metavar="N")
+    pd.add_argument("--no-verify", action="store_true", help="skip re-reading the output and checking it")
+    pd.set_defaults(func=cmd_pad)
     rt = sub.add_parser("roundtrip", help="load and re-write a save unchanged, then compare bytes")
     rt.add_argument("input")
     rt.add_argument("output")
