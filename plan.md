@@ -108,7 +108,10 @@ MultiFloors, DeepRim, VEF core, SomeThingsFloat, ReGrowth core, Adaptive Storage
   - DeepRim `holeLocation` is in underground-map coordinates.
   - MultiFloors stairs link by reference (`mf_entrance`); `StairEntrance` on Map_0 and `StairExit` on Map_25 sit on the same cell (182, 129), so the basement must get identical padding.
   - RimLogic and Rimatomics save IntVec3 fields (feedCell, destinationCell, ...). None appear in this save; on a map they are covered by the default shift rule. Rimatomics `WorldObject_Missile.destinationCell` would show up as world-level `unknown`.
-- Not present in the sample save, so not verified yet: CellRect values (e.g. `layoutStructureSketches`, `landingBlockers`), `planManager` plans, `tempTerrain` cells.
+- Second sample `include/2_plans_constructions.rws` (same colony, plus plans and build blueprints): round trip byte-identical, all grids round-trip, 0 unknown paths. The only new census row is `MAP/planManager/allPlans/li/cells/li` (IntVec3 list, `shift`; `Plan.ExposeData` saves just ID/label/color/cells). Blueprints (`Blueprint_Build`, `Blueprint_Door`) are ordinary things carrying only `pos`, so they're covered by the thing `pos` rule. Every other difference is pawn activity between the two saves.
+- Still not in any sample save:
+  - `Map.landingBlockers`: a `List<CellRect>` that Odyssey orbital and space maps use to block gravship landing. It falls under the `MAP/` shift rule. Phase 3 has to shift both corners of a CellRect: `(minX+W,minZ+S,maxX+W,maxZ+S)`.
+  - Temporary terrain (ice from freezing, floods, lava): it lives in `terrainGrid/tempGridDeflate`, which is already padded as a grid.
 
 ### Open questions for Phase 3
 - Neutral pad values per grid:
