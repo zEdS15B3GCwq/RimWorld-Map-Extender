@@ -11,8 +11,8 @@ Environment and rules are in [CLAUDE.md](CLAUDE.md). This file tracks the plan, 
 | 0. Setup + byte-identical round trip | ✅ done |
 | 1. Coordinate census | ✅ done (0 unknown paths in the sample save) |
 | 2. Grid codecs + PNG rendering | ✅ done (all 72 grids in the sample save round-trip) |
-| 3. Padding only (no new content) | 🧪 implemented, verified offline; awaiting in-game load tests |
-| 4. Donor-map content for the border | ⏳ |
+| 3. Padding only (no new content) | ✅ done (loaded in game) |
+| 4. Donor-map content for the border | ⏳ next |
 | 5. CLI polish, safety checks, tests | ⏳ |
 
 ## Phases
@@ -43,17 +43,26 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - Renders: one PNG per grid per map plus `things.png` (thing positions by category), north up. In Map_0, terrain, things, rock (compressed thing map) and roofs line up with each other.
 - `find_grids(map)` finds grids by decoding any blob whose size fits the map's cell count; `find_cell_lists(map)` finds the `<li>`-per-cell lists (MixedBiome).
 
-### 3. Padding only 🧪
+### 3. Padding only ✅
 `mapext/pad.py`; CLI `python -m mapext pad <in> <out> [--map Map_0] [--all N] [--west N --east N --south N --north N]`.
 - The census walk is now a reusable generator (`census.iter_values`). `pad_save` classifies every value with `census.RULES` first and aborts on any `unknown` path before changing anything. Then:
   - size: `mapInfo/size`, BoolGrid `mapSizeX`/`mapSizeZ`;
   - grids: terrain `topGrid`/`underGrid` and `temperatureCache` are padded by copying the edge; every other grid gets 0 (none/False). MixedBiome `<li>` list: edge copy;
   - shift: every value on a padded map, skipping `(-1000, -1000, -1000)`. CellRect shifts both corners. Vector3 keeps y and writes x/z as float32 with 9 significant digits, like the game;
   - shift-if-map: history look targets by their `Map_N`; quest part cells by the part's `mapParent` (world object → `mapInfo/parent`) or a `map*` field naming a pawn (→ the map holding it); `cameraMap/camRootPos` when `currentMapIndex` is padded. Unresolvable valid values are reported and left alone (none in the sample saves).
-- Linked maps: the MultiFloors levels in the target's `MF_LevelMapComp/mapByLevel` (Map_25 for Map_0) get identical padding and must be the same size. The DeepRim map (Map_23) is untouched: `holeLocation` is an underground cell, and the lift on Map_0 is an ordinary shifted thing.
+- Linked maps: only the chosen map and its MultiFloors levels change. Levels are read from the ground map's `MF_LevelMapComp/mapByLevel`, so choosing Map_25 also pads Map_0. They get identical padding and must be the same size. Checked by comparing map subtrees: with `--map Map_0`, Map_23 is unchanged; with `--map Map_23`, Map_0 and Map_25 are unchanged. The sample saves have no quest maps, but they'd be treated the same way. The DeepRim map (Map_23) is untouched: `holeLocation` is an underground cell, and the lift on Map_0 is an ordinary shifted thing.
 - `verify_pad` (runs after every `pad` unless `--no-verify`) re-reads the output and checks: new sizes; every grid cropped back equals the original; every coordinate value equals the original or the original + offset, exactly where the rules say.
 - Results: pad 0 → value-identical to the input (only grid compression differs). Pads of 1, 25 (325×325), W3/S5 and, on the plans save, E10/N20 all verify; census on the 325×325 output has 0 unknown and 0 out-of-bounds values. 52k IntVec3, 3 Vector3, 18 world-level targets, 44 size fields, 51 grids + 1 cell list per run.
-- In-game test saves: `out/pad0.rws`, `out/pad1.rws`, `out/pad25.rws`, `out/pad_w3s5.rws`, `out/2pc_pad_e10n20.rws`. Load in order; first failure tells us what the offline checks miss.
+- In-game test (user): `pad0`, `pad25`, `pad_w3s5` and `2pc_pad_e10n20` load with no new errors (the original save's errors remain); `pad1` not tried. Padding is on the right sides at the right width, including the MultiFloors level. Pawns walk into the border and haul items there. Buildings, pawns, plans and blueprints are in the right spots. The border shows stripes and no fog, as expected.
+
+### Map selection (`maps` done, multi-map extending planned)
+`python -m mapext maps <save>` (`mapext/maps.py`) lists maps per tile as a tree of recorded links, with each map's padding group. The user picks from it.
+
+Planned changes to the extending command (not implemented yet):
+- `--map` becomes required, since `Map_0` isn't necessarily a colony. It's repeatable, so one run can extend several maps. Padding options apply to each chosen map. Per-map sizes won't be supported (decided with the user): runs are fast and can be chained.
+- Choosing any MultiFloors level pads its whole group. Two `--map` values in the same group count once. DeepRim maps change only when chosen.
+- Shift `holeLocation` when its DeepRim map is padded (rule change to `shift-if-map`, resolved through the world object). Today it stays stale. DeepRim reads it only during `drillNewLayer` and that map's generation, which happen once, before the map exists, so it should be harmless. It starts as the shaft position scaled to the underground map size and the lift spawns there, but the lift then has its own `pos`.
+- Print the selected groups before padding.
 
 ### 4. Donor content
 The user generates donor saves with the same mod list. Copy terrain, grids and natural things (rock, ores, plants, filth) into the border; reassign thing IDs and bump `uniqueIDsManager`. Rock walls live in `compressedThingMapDeflate` (def `shortHash`; fine with the same mod list). Fog the new border.
@@ -83,6 +92,14 @@ CLI `mapext extend ...`, refuse to run on `unknown` census paths, tests on small
 - Cell index = `z * sizeX + x` (`CellIndicesUtility`). Grids are row-major from the south: reshape to `(sizeZ, sizeX)`.
 - Shift for padding: `(x + padW, y, z + padS)`.
 - Rock walls etc. are "save-compressible" and stored only in `compressedThingMapDeflate` as per-cell ushort def `shortHash` values (`MapFileCompressor`).
+
+### Map types and links (verified on `include/2_2colonies_MFDRmix.rws`)
+- Type: `mapInfo/parent` names a world object in `world/worldObjects` or `world/pocketMaps`. `Settlement` = colony when its faction's def equals `scenario/playerFaction/factionDef`; `DeepRim.UndergroundMapParent` has `depth`; MultiFloors levels are `PocketMap` with `MF_LevelMapComp/level`, and `sourceMap` on the world object.
+- MultiFloors: `MF_LevelMapComp/groundMap` on every map, and `mapByLevel` on the ground map. Level 0 omits `level`. A DeepRim map can be a ground map.
+- DeepRim: `DeepRim.UndergroundManager/layers` (depth → world object) and `layerNames` on whichever map holds the shaft, including a MultiFloors level. DeepRim maps vary in size (100×100, 150×150 here).
+- Sharing a tile says nothing about links: all five maps on tile 127024 are connected, but through different kinds of link.
+- Sample: Map_0 colony → { Map_25 MF -1 → Map_26 DeepRim "MF-DR1"; Map_23 DeepRim "COL-DR7" → Map_27 MF -1 }; Map_28 second colony on another tile. The outposts have no maps.
+- Checks on this save: round trip byte-identical (71 MB), all grids round-trip, 0 unknown census paths. The only new census row is MixedBiome at 150×150. Padding each map verifies and leaves every map outside its group byte-identical in serialized form. Not loaded in the game yet.
 
 ### Mods in `include/Mods`
 MultiFloors, DeepRim, VEF core, SomeThingsFloat, ReGrowth core, Adaptive Storage, CaveworldFlora, CaveBiome, VFE Factory, TechAdvancing, RimLogic, Rimatomics, Cleaning Area Relaunched, Door Mat, RimFridge. Some (e.g. Adaptive Storage) have a `Source/` folder. Several were included only because their classes appear in the save; the census decides which ones actually matter.

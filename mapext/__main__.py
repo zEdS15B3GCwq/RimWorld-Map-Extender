@@ -71,6 +71,13 @@ def cmd_grids(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def cmd_maps(args: argparse.Namespace) -> int:
+    from .maps import format_maps, list_maps
+
+    print(format_maps(list_maps(load_save(args.input).getroot())))
+    return 0
+
+
 def cmd_pad(args: argparse.Namespace) -> int:
     from .pad import Padding, pad_save
 
@@ -109,6 +116,9 @@ def main() -> int:
     gr.add_argument("input")
     gr.add_argument("--render", metavar="DIR", help="write one PNG per grid per map into DIR/<map>/")
     gr.set_defaults(func=cmd_grids)
+    mp = sub.add_parser("maps", help="list the save's maps per tile and how they connect")
+    mp.add_argument("input")
+    mp.set_defaults(func=cmd_maps)
     pd = sub.add_parser("pad", help="pad a map (and its MultiFloors levels) with empty border cells")
     pd.add_argument("input")
     pd.add_argument("output")

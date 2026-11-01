@@ -79,13 +79,20 @@ def shift_text(kind: str, m: re.Match, pad: Padding) -> str | None:
     raise ValueError(f"don't know how to shift {kind}")
 
 
-def linked_maps(map_el) -> list[str]:
-    """Map ids that must be padded together with `map_el`: its MultiFloors levels, which share coordinates."""
-    out = []
-    for comp in map_el.find("components"):
-        if comp.get("Class") == "MultiFloors.MF_LevelMapComp":
-            out += [li.text for li in comp.iterfind("mapByLevel/values/li") if li.text and li.text.startswith("Map_")]
-    return out
+def linked_maps(map_el, by_id: dict) -> list[str]:
+    """Map ids that must be padded together with `map_el`: all MultiFloors levels of its ground map,
+    which share coordinates. Only the ground map lists the levels, so go through it."""
+    def level_comp(el):
+        return next((c for c in el.find("components") if c.get("Class") == "MultiFloors.MF_LevelMapComp"), None)
+
+    comp = level_comp(map_el)
+    if comp is None:
+        return []
+    ground = by_id.get(comp.findtext("groundMap"))
+    if ground is not None:
+        comp = level_comp(ground)
+    out = [comp.findtext("groundMap")] + [li.text for li in comp.iterfind("mapByLevel/values/li")]
+    return [m for m in dict.fromkeys(out) if m in by_id]
 
 
 def _world_target_resolver(root, map_ids: dict):
@@ -136,7 +143,7 @@ def pad_save(tree, map_id: str, pad: Padding) -> PadReport:
     by_id = {mid: el for el, mid in map_ids.items()}
     if map_id not in by_id:
         raise KeyError(f"no map {map_id}; maps: {', '.join(by_id)}")
-    padded = [map_id] + [m for m in linked_maps(by_id[map_id]) if m != map_id]
+    padded = [map_id] + [m for m in linked_maps(by_id[map_id], by_id) if m != map_id]
     for mid in padded:
         if map_sizes[mid] != map_sizes[map_id]:
             raise ValueError(f"linked map {mid} is {map_sizes[mid]}, {map_id} is {map_sizes[map_id]}")
@@ -231,7 +238,7 @@ def verify_pad(orig_tree, padded_tree, map_id: str, pad: Padding) -> list[str]:
     pmaps, psizes = map_index(proot)
     oby = {mid: el for el, mid in omaps.items()}
     pby = {mid: el for el, mid in pmaps.items()}
-    padded = [map_id] + [m for m in linked_maps(oby[map_id]) if m != map_id]
+    padded = [map_id] + [m for m in linked_maps(oby[map_id], oby) if m != map_id]
     sx, sz = osizes[map_id]
     want = (sx + pad.west + pad.east, sz + pad.south + pad.north)
     for mid in osizes:
