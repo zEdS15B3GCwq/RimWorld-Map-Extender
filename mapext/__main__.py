@@ -78,8 +78,9 @@ def cmd_maps(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_pad(args: argparse.Namespace) -> int:
-    from .pad import Padding, pad_save
+def cmd_extend(args: argparse.Namespace) -> int:
+    from .census import map_index
+    from .pad import Padding, pad_save, select_groups, verify_pad
 
     src, dst = Path(args.input), Path(args.output)
     if src.resolve() == dst.resolve():
@@ -88,20 +89,27 @@ def cmd_pad(args: argparse.Namespace) -> int:
     a = args.all
     pad = Padding(*(a if v is None else v for v in (args.west, args.east, args.south, args.north)))
     tree = load_save(src)
-    report = pad_save(tree, args.map, pad)
+    root = tree.getroot()
+    try:
+        _, sizes = map_index(root)
+        for group in select_groups(root, args.map):
+            sx, sz = sizes[group[0]]
+            print(f"{', '.join(group)}: {sx}x{sz} -> {sx + pad.west + pad.east}x{sz + pad.south + pad.north}")
+        report = pad_save(tree, args.map, pad)
+    except (KeyError, ValueError) as e:
+        print(f"error: {e.args[0]}", file=sys.stderr)
+        return 2
     print(report.format())
     dst.parent.mkdir(parents=True, exist_ok=True)
     write_save(tree, dst)
     print(f"-> {dst}")
     if args.no_verify:
         return 0
-    from .pad import verify_pad
-
     problems = verify_pad(load_save(src), load_save(dst), args.map, pad)
     for p in problems:
         print("  PROBLEM:", p)
-    print("verified: grids crop back to the original, every coordinate shifted exactly once" if not problems
-          else f"{len(problems)} problem(s)")
+    print("verified: unselected maps unchanged, grids crop back to the original, every coordinate shifted exactly once"
+          if not problems else f"{len(problems)} problem(s)")
     return 1 if problems else 0
 
 
@@ -119,15 +127,16 @@ def main() -> int:
     mp = sub.add_parser("maps", help="list the save's maps per tile and how they connect")
     mp.add_argument("input")
     mp.set_defaults(func=cmd_maps)
-    pd = sub.add_parser("pad", help="pad a map (and its MultiFloors levels) with empty border cells")
-    pd.add_argument("input")
-    pd.add_argument("output")
-    pd.add_argument("--map", default="Map_0", help="map id, e.g. Map_0 (default)")
-    pd.add_argument("--all", type=int, default=0, metavar="N", help="cells to add on every side not given below")
+    ex = sub.add_parser("extend", help="pad chosen maps (and their MultiFloors levels) with empty border cells")
+    ex.add_argument("input")
+    ex.add_argument("output")
+    ex.add_argument("--map", action="append", required=True, metavar="ID",
+                    help="map id from the maps command, e.g. Map_0; repeat for several maps")
+    ex.add_argument("--all", type=int, default=0, metavar="N", help="cells to add on every side not given below")
     for side in ("west", "east", "south", "north"):
-        pd.add_argument(f"--{side}", type=int, metavar="N")
-    pd.add_argument("--no-verify", action="store_true", help="skip re-reading the output and checking it")
-    pd.set_defaults(func=cmd_pad)
+        ex.add_argument(f"--{side}", type=int, metavar="N")
+    ex.add_argument("--no-verify", action="store_true", help="skip re-reading the output and checking it")
+    ex.set_defaults(func=cmd_extend)
     rt = sub.add_parser("roundtrip", help="load and re-write a save unchanged, then compare bytes")
     rt.add_argument("input")
     rt.add_argument("output")

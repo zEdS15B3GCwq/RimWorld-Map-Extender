@@ -6,7 +6,7 @@ the actions:
 - grid: every byte-array grid and one-<li>-per-cell list, padded with a neutral value;
 - shift: values under a padded map's subtree;
 - shift-if-map: world-level values whose target map is padded (history look targets, quest part
-  cells, the camera).
+  cells, the camera, DeepRim `holeLocation`).
 Any `unknown` path aborts before the tree is changed.
 """
 import re
@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
+from lxml import etree
 
 from .census import INVALID_IV3, classify_rule, iter_values, map_index
 from .grids import find_grids, pad_array
@@ -127,6 +128,9 @@ def _world_target_resolver(root, map_ids: dict):
     def resolve(v):
         if v.kind == "IntVec3+map":
             return v.match[4]
+        if v.element.tag == "holeLocation":
+            # On the DeepRim world object; "" = that layer has no map now, which is normal.
+            return parent_to_map.get(f"WorldObject_{v.element.getparent().findtext('ID')}", "")
         if v.path.startswith("game/questManager/"):
             return quest_part_map(v.element)
         if v.path == "game/cameraMap/camRootPos":
@@ -136,19 +140,31 @@ def _world_target_resolver(root, map_ids: dict):
     return resolve
 
 
-def pad_save(tree, map_id: str, pad: Padding) -> PadReport:
-    """Pad `map_id` and its linked maps in place."""
+def select_groups(root, map_ids: list[str]) -> list[list[str]]:
+    """Padding groups for the chosen maps: each chosen map plus its MultiFloors levels, without repeats."""
+    elements, sizes = map_index(root)
+    by_id = {mid: el for el, mid in elements.items()}
+    groups, seen = [], set()
+    for mid in map_ids:
+        if mid not in by_id:
+            raise KeyError(f"no map {mid}; maps: {', '.join(by_id)}")
+        if mid in seen:
+            continue
+        group = [mid] + [m for m in linked_maps(by_id[mid], by_id) if m != mid]
+        for m in group:
+            if sizes[m] != sizes[mid]:
+                raise ValueError(f"linked map {m} is {sizes[m]}, {mid} is {sizes[mid]}")
+        groups.append(group)
+        seen.update(group)
+    return groups
+
+
+def pad_save(tree, map_ids: list[str], pad: Padding) -> PadReport:
+    """Pad the chosen maps and their linked maps in place."""
     root = tree.getroot()
-    map_ids, map_sizes = map_index(root)
-    by_id = {mid: el for el, mid in map_ids.items()}
-    if map_id not in by_id:
-        raise KeyError(f"no map {map_id}; maps: {', '.join(by_id)}")
-    padded = [map_id] + [m for m in linked_maps(by_id[map_id], by_id) if m != map_id]
-    for mid in padded:
-        if map_sizes[mid] != map_sizes[map_id]:
-            raise ValueError(f"linked map {mid} is {map_sizes[mid]}, {map_id} is {map_sizes[map_id]}")
-    sx, sz = map_sizes[map_id]
-    nx, nz = sx + pad.west + pad.east, sz + pad.south + pad.north
+    map_els, map_sizes = map_index(root)
+    by_id = {mid: el for el, mid in map_els.items()}
+    padded = [m for group in select_groups(root, map_ids) for m in group]
     report = PadReport(maps=padded)
 
     # Classify everything first so an unknown path aborts before anything changes.
@@ -161,12 +177,12 @@ def pad_save(tree, map_id: str, pad: Padding) -> PadReport:
         values.append((v, action))
     if unknown:
         raise ValueError("unknown census paths, add rules first:\n" + "\n".join(f"  {p} [{k}]" for p, k in sorted(unknown)))
-    resolve = _world_target_resolver(root, map_ids)
+    resolve = _world_target_resolver(root, map_els)
 
     grid_elements = set()
     for mid in padded:
-        m = by_id[mid]
-        for g in find_grids(m):
+        sx, sz = map_sizes[mid]
+        for g in find_grids(by_id[mid]):
             mode, const = _grid_pad_mode(g.path, g.label)
             arr = pad_array(g.array(sx, sz), pad.west, pad.east, pad.south, pad.north, value=const, mode=mode)
             g.store(arr)
@@ -180,6 +196,7 @@ def pad_save(tree, map_id: str, pad: Padding) -> PadReport:
                 continue
             if v.kind.startswith("cell-list"):
                 # One <li> per cell (MixedBiomeMapComponent/biomeGrid): pad by copying the edge.
+                sx, sz = map_sizes[v.map_id]
                 cells = np.array([c.text for c in el], dtype=object).reshape(sz, sx)
                 cells = np.pad(cells, ((pad.south, pad.north), (pad.west, pad.east)), mode="edge")
                 for c in list(el):
@@ -194,6 +211,8 @@ def pad_save(tree, map_id: str, pad: Padding) -> PadReport:
         elif action == "size":
             if v.map_id not in padded:
                 continue
+            sx, sz = map_sizes[v.map_id]
+            nx, nz = sx + pad.west + pad.east, sz + pad.south + pad.north
             if v.kind == "IntVec3":  # mapInfo/size
                 el.text = f"({nx}, {v.match[2]}, {nz})"
             elif el.tag == "mapSizeX":
@@ -224,13 +243,13 @@ def pad_save(tree, map_id: str, pad: Padding) -> PadReport:
     return report
 
 
-def verify_pad(orig_tree, padded_tree, map_id: str, pad: Padding) -> list[str]:
+def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding) -> list[str]:
     """Check a padded save against its original; return a list of problems (empty = ok).
 
+    - every padded map has its new size, and every other map's subtree is unchanged;
     - every grid of a padded map, cropped back to the old area, equals the original;
     - every coordinate value either equals the original or the original shifted by the padding,
-      and the shifted ones are exactly the values `pad_save` should shift;
-    - mapInfo/size is the new size.
+      and the shifted ones are exactly the values `pad_save` should shift.
     """
     problems = []
     oroot, proot = orig_tree.getroot(), padded_tree.getroot()
@@ -238,24 +257,25 @@ def verify_pad(orig_tree, padded_tree, map_id: str, pad: Padding) -> list[str]:
     pmaps, psizes = map_index(proot)
     oby = {mid: el for el, mid in omaps.items()}
     pby = {mid: el for el, mid in pmaps.items()}
-    padded = [map_id] + [m for m in linked_maps(oby[map_id], oby) if m != map_id]
-    sx, sz = osizes[map_id]
-    want = (sx + pad.west + pad.east, sz + pad.south + pad.north)
-    for mid in osizes:
-        expect = want if mid in padded else osizes[mid]
+    padded = [m for group in select_groups(oroot, map_ids) for m in group]
+    for mid, (sx, sz) in osizes.items():
+        expect = (sx + pad.west + pad.east, sz + pad.south + pad.north) if mid in padded else (sx, sz)
         if psizes.get(mid) != expect:
             problems.append(f"{mid}: size {psizes.get(mid)}, expected {expect}")
+        elif mid not in padded and etree.tostring(oby[mid]) != etree.tostring(pby[mid]):
+            problems.append(f"{mid}: changed, but it wasn't selected")
     if problems:
         return problems
 
-    crop = (slice(pad.south, pad.south + sz), slice(pad.west, pad.west + sx))
     for mid in padded:
+        sx, sz = osizes[mid]
+        crop = (slice(pad.south, pad.south + sz), slice(pad.west, pad.west + sx))
         og, pg = find_grids(oby[mid]), find_grids(pby[mid])
         if [g.path for g in og] != [g.path for g in pg]:
             problems.append(f"{mid}: grid list differs")
             continue
         for a, b in zip(og, pg):
-            if not np.array_equal(a.array(sx, sz), b.array(*want)[crop]):
+            if not np.array_equal(a.array(sx, sz), b.array(*psizes[mid])[crop]):
                 problems.append(f"{mid}: grid {a.path} doesn't crop back to the original")
 
     resolve = _world_target_resolver(oroot, omaps)

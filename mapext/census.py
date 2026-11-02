@@ -50,7 +50,7 @@ RULES = [
     (r"IntVec3", r"^game/questManager/", "shift-if-map", "quest part cell on the quest's map"),
     (r"Vector3", r"^game/cameraMap/camRootPos$", "shift-if-map", "camera on the current map (cosmetic)"),
     (r"IntVec3", r"^game/world/info/initialMapSize$", "keep", "default size for new maps"),
-    (r"IntVec3", r"/li\[DeepRim\.UndergroundMapParent\]/holeLocation$", "keep", "cell on the underground map"),
+    (r"IntVec3", r"/li\[DeepRim\.UndergroundMapParent\]/holeLocation$", "shift-if-map", "cell on that underground map"),
     (r"IntVec3|Vector3", r"^game/world/(grid|features)/", "keep", "world-sphere coordinates"),
     (r"blob", r"^game/(world/grid|history)/", "keep", "world tile grids, history records"),
     (r"int\?", r".", "keep", "reviewed: indices unrelated to map cells"),
