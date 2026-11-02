@@ -1,9 +1,10 @@
-"""Pad a map (and the maps linked to it) with empty border cells, shifting every cell reference.
+"""Pad a map (and the maps linked to it), filling the border from the nearest old edge cell and
+shifting every cell reference.
 
 What to change is decided by the census rules (`census.RULES`), so this module only implements
 the actions:
 - size: `mapInfo/size` and BoolGrid `mapSizeX`/`mapSizeZ`;
-- grid: every byte-array grid and one-<li>-per-cell list, padded with a neutral value;
+- grid: every byte-array grid and one-<li>-per-cell list, filled as `_fill_grid` decides;
 - shift: values under a padded map's subtree;
 - shift-if-map: world-level values whose target map is padded (history look targets, quest part
   cells, the camera, DeepRim `holeLocation`).
@@ -46,14 +47,68 @@ class PadReport:
         return "\n".join(lines)
 
 
-def _grid_pad_mode(path: str, label: str) -> tuple[str, object]:
-    """(np.pad mode, constant) for one grid. Values are def shortHashes or amounts, so 0 = none,
-    except where an empty cell would be invalid (terrain) or misleading (room temperatures)."""
-    if path.startswith("terrainGrid/") and label in ("topGrid", "underGrid"):
-        return "edge", None  # every cell needs a terrain; copy the edge (blending is for later)
-    if path.startswith("temperatureCache/"):
-        return "edge", None
-    return "constant", 0
+def stable_string_hash(text: str) -> int:
+    """GenText.StableStringHash: a wrapped signed 32-bit int."""
+    h = 23
+    for ch in text:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return h - (1 << 32) if h >= 1 << 31 else h
+
+
+def _short_hashes(names: tuple[str, ...]) -> set[int]:
+    """Possible Def.shortHash values. The game moves a hash up when it is taken, which depends on the
+    mod list (MineableSteel is one above its plain hash in the sample), so accept a few steps."""
+    out = set()
+    for name in names:
+        h = stable_string_hash(name)
+        base = (abs(h) % 65535) * (-1 if h < 0 else 1) & 0xFFFF  # C# % keeps the sign, then cast to ushort
+        out.update(range(base, base + 4))
+    return out
+
+
+STONES = _short_hashes(("Sandstone", "Granite", "Limestone", "Slate", "Marble", "Vacstone", "SolidIce"))
+ORES = _short_hashes(("MineableSteel", "MineableSilver", "MineableGold", "MineableUranium", "MineablePlasteel",
+                      "MineableJade", "MineableComponentsIndustrial", "MineableObsidian", "MineableColdCrystal"))
+NATURAL_ROOFS = _short_hashes(("RoofRockThin", "RoofRockThick"))
+NEIGHBOURS = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
+def _stone_edge(things: np.ndarray) -> np.ndarray:
+    """`compressedThingMap` keeping only stone; an edge ore becomes a touching stone, if there is one."""
+    is_stone = np.isin(things, list(STONES))
+    out = np.where(is_stone, things, 0)
+    sz, sx = things.shape
+    for z, x in zip(*np.nonzero(np.isin(things, list(ORES)))):
+        if z in (0, sz - 1) or x in (0, sx - 1):
+            for dz, dx in NEIGHBOURS:
+                nz, nx = z + dz, x + dx
+                if 0 <= nz < sz and 0 <= nx < sx and is_stone[nz, nx]:
+                    out[z, x] = things[nz, nx]
+                    break
+    return out
+
+
+def _edge_source(label: str, path: str, arr: np.ndarray, under: np.ndarray | None) -> np.ndarray | None:
+    """What the border copies for one grid, as an array of the old size; None = stays empty."""
+    if label == "topGrid" and path.startswith("terrainGrid/"):
+        return np.where(under != 0, under, arr)  # under is set only below a built floor
+    if label == "roofs":
+        return np.where(np.isin(arr, list(NATURAL_ROOFS)), arr, 0)
+    if label == "compressedThingMap":
+        return _stone_edge(arr)
+    if label in ("fogGrid", "riverFlowMap") or path.startswith("temperatureCache/"):
+        return arr
+    return None
+
+
+def _fill_grid(g, arr: np.ndarray, under: np.ndarray | None, pad: Padding) -> np.ndarray:
+    """Pad one grid: the old area unchanged, the border from the nearest edge cell or empty."""
+    source = _edge_source(g.label, g.path, arr, under)
+    if source is None:
+        return pad_array(arr, pad.west, pad.east, pad.south, pad.north)
+    out = pad_array(source, pad.west, pad.east, pad.south, pad.north, mode="edge")
+    out[pad.south:pad.south + arr.shape[0], pad.west:pad.west + arr.shape[1]] = arr
+    return out
 
 
 def _fmt_float(v: float) -> str:
@@ -182,12 +237,13 @@ def pad_save(tree, map_ids: list[str], pad: Padding) -> PadReport:
     grid_elements = set()
     for mid in padded:
         sx, sz = map_sizes[mid]
-        for g in find_grids(by_id[mid]):
-            mode, const = _grid_pad_mode(g.path, g.label)
-            arr = pad_array(g.array(sx, sz), pad.west, pad.east, pad.south, pad.north, value=const, mode=mode)
-            g.store(arr)
+        grids = find_grids(by_id[mid])
+        under = next(g.array(sx, sz) for g in grids if g.label == "underGrid")
+        for g in grids:
+            arr = g.array(sx, sz)
+            g.store(_fill_grid(g, arr, under, pad))
             grid_elements.add(g.element)
-            report.actions[f"grid {mode}"] += 1
+            report.actions["grid edge" if _edge_source(g.label, g.path, arr, under) is not None else "grid empty"] += 1
 
     for v, action in values:
         el, text = v.element, (v.element.text or "").strip()
@@ -243,6 +299,34 @@ def pad_save(tree, map_ids: list[str], pad: Padding) -> PadReport:
     return report
 
 
+def _check_border(mid: str, og: list, pg: list, old: tuple, new: tuple, pad: Padding) -> list[str]:
+    """Check border cells without using the fill code: each is its nearest edge cell or allowed empty."""
+    (sx, sz), (nx, nz) = old, new
+    zz, xx = np.meshgrid(np.arange(nz) - pad.south, np.arange(nx) - pad.west, indexing="ij")
+    border = (zz < 0) | (zz >= sz) | (xx < 0) | (xx >= sx)
+    nearest = np.clip(zz, 0, sz - 1), np.clip(xx, 0, sx - 1)
+    under = next(g.array(sx, sz) for g in og if g.label == "underGrid")
+    problems = []
+    for a, b in zip(og, pg):
+        was, now = a.array(sx, sz), b.array(nx, nz)
+        edge = was[nearest][border]
+        got = now[border]
+        if a.label == "topGrid" and a.path.startswith("terrainGrid/"):
+            good = got == np.where(under[nearest][border] != 0, under[nearest][border], edge)
+        elif a.label == "roofs":
+            good = (got == edge) & np.isin(got, list(NATURAL_ROOFS)) | (got == 0) & ~np.isin(edge, list(NATURAL_ROOFS))
+        elif a.label == "compressedThingMap":
+            good = np.isin(got, list(STONES)) | (got == 0)
+            good &= (got == edge) | (got == 0) | np.isin(edge, list(ORES))
+        elif a.label in ("fogGrid", "riverFlowMap") or a.path.startswith("temperatureCache/"):
+            good = got == edge
+        else:
+            good = got == 0
+        if not np.all(good):
+            problems.append(f"{mid}: grid {a.path} has {int((~good).sum())} wrong border value(s)")
+    return problems
+
+
 def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding) -> list[str]:
     """Check a padded save against its original; return a list of problems (empty = ok).
 
@@ -277,6 +361,7 @@ def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding) -> list
         for a, b in zip(og, pg):
             if not np.array_equal(a.array(sx, sz), b.array(*psizes[mid])[crop]):
                 problems.append(f"{mid}: grid {a.path} doesn't crop back to the original")
+        problems += _check_border(mid, og, pg, (sx, sz), psizes[mid], pad)
 
     resolve = _world_target_resolver(oroot, omaps)
     for a, b in zip(iter_values(oroot), iter_values(proot)):

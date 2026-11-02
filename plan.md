@@ -64,17 +64,22 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - Offline results on `2_2colonies_MFDRmix.rws`: `--map Map_0 --map Map_25 --map Map_27` (two groups, E10/N20), `--map Map_26` (W5/S4) and `--map Map_28` (all 10) all verify. Pad 0 on `2.rws` stays value-identical. Test saves: `out/mix_0_23_e10n20.rws`, `out/mix_26_w5s4.rws`, `out/mix_28_all10.rws`.
 - In game (user): all three test saves load with no new errors, with the right maps padded by the right sizes and the others unchanged. Shafts, lifts and stairs line up, and MultiFloors levels stay connected, including padded DeepRim maps.
 
-### 4a. Nearest-edge fill (agreed with the user, not built)
+### 4a. Nearest-edge fill ✅ built (not loaded in game yet)
 - `extend ... --fill edge|donor`, default `edge`, replacing today's partial fill.
 - Copy from the nearest old edge cell: natural terrain, natural roofs (not `RoofConstructed`), river flow, fog, temperature, plain rock.
 - Terrain: if `underGrid` is set, the top is a built floor, so use the under terrain as the new top. Don't copy `foundationGrid`. Fertility follows from terrain.
 - `compressedThingMap` holds one thing per cell: rock, ores, chunks and others. Copy only the stone types; chunks become empty.
 - Don't copy plants, animals, gas, snow, sand, pollution or deep resources. They come back in play or aren't wanted.
 - Mined tunnels on the edge carry on into the border (accepted).
+- Ore on the edge becomes a stone from its 8 neighbours if there is one, otherwise empty. Smoothed floors are copied as they are. Damaged or designated rock (saved as a normal thing, so absent from the grid) isn't handled, by decision.
+- Def values are `shortHash`es, computed from def names (`pad._short_hashes`). The game bumps a hash up when it is taken, and that depends on the mod list (`MineableSteel` is one above its plain hash), so a few steps are accepted. Modded stones and ores need adding to `STONES`/`ORES`, or they stay empty.
+- `verify_pad` checks border cells against the rules, using its own nearest-cell lookup.
+- Test saves: `out/fill_0_all20.rws`, `out/fill_23_e10n20.rws`, `out/fill_26_w5s4.rws`, `out/fill_28_all10.rws`.
 - Soil Relocation Framework is active in the samples and adds no grid or census path, so it needs nothing.
 
 ### Donor notes
 - `--donor <save> --donor-map <id>`: both needed. Users generate donor saves themselves; we only give instructions.
+- `maps` prints the world settings and each map's computed seed (not stored in the save, so unconfirmed against the game).
 - Map seed: `HashCombineInt(StableStringHash(world seedString), tile)`, not dependent on size; pocket maps use the parent ID instead of the tile. Elevation noise is sampled at raw cell coordinates. Alignment still needs a test.
 
 ### 4. Donor content

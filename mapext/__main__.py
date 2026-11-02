@@ -72,9 +72,11 @@ def cmd_grids(args: argparse.Namespace) -> int:
 
 
 def cmd_maps(args: argparse.Namespace) -> int:
-    from .maps import format_maps, list_maps
+    from .maps import format_maps, format_world, list_maps
 
-    print(format_maps(list_maps(load_save(args.input).getroot())))
+    root = load_save(args.input).getroot()
+    print(format_world(root))
+    print(format_maps(list_maps(root)))
     return 0
 
 
@@ -108,7 +110,8 @@ def cmd_extend(args: argparse.Namespace) -> int:
     problems = verify_pad(load_save(src), load_save(dst), args.map, pad)
     for p in problems:
         print("  PROBLEM:", p)
-    print("verified: unselected maps unchanged, grids crop back to the original, every coordinate shifted exactly once"
+    print("verified: unselected maps unchanged, grids crop back to the original, border follows the fill rules, "
+          "every coordinate shifted exactly once"
           if not problems else f"{len(problems)} problem(s)")
     return 1 if problems else 0
 
@@ -127,7 +130,7 @@ def main() -> int:
     mp = sub.add_parser("maps", help="list the save's maps per tile and how they connect")
     mp.add_argument("input")
     mp.set_defaults(func=cmd_maps)
-    ex = sub.add_parser("extend", help="pad chosen maps (and their MultiFloors levels) with empty border cells")
+    ex = sub.add_parser("extend", help="pad chosen maps (and their MultiFloors levels), filling the border")
     ex.add_argument("input")
     ex.add_argument("output")
     ex.add_argument("--map", action="append", required=True, metavar="ID",
@@ -135,6 +138,7 @@ def main() -> int:
     ex.add_argument("--all", type=int, default=0, metavar="N", help="cells to add on every side not given below")
     for side in ("west", "east", "south", "north"):
         ex.add_argument(f"--{side}", type=int, metavar="N")
+    ex.add_argument("--fill", choices=["edge"], default="edge", help="how to fill the border (edge: nearest old cell)")
     ex.add_argument("--no-verify", action="store_true", help="skip re-reading the output and checking it")
     ex.set_defaults(func=cmd_extend)
     rt = sub.add_parser("roundtrip", help="load and re-write a save unchanged, then compare bytes")

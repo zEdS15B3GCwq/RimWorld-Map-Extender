@@ -8,7 +8,7 @@
 from dataclasses import dataclass, field
 
 from .census import map_index
-from .pad import linked_maps
+from .pad import linked_maps, stable_string_hash
 
 
 @dataclass
@@ -18,6 +18,7 @@ class MapInfo:
     kind: str
     tile: str
     label: str = ""
+    seed: int = 0
     level: int = 0
     above: str | None = None  # the map this one hangs off in the listing
     below: list = field(default_factory=list)
@@ -44,12 +45,41 @@ def _player_faction(game) -> str | None:
     return None
 
 
+def _to_int32(v: int) -> int:
+    v &= 0xFFFFFFFF
+    return v - (1 << 32) if v >= 1 << 31 else v
+
+
+def _map_seed(world_seed: int, value: int) -> int:
+    """Gen.HashCombineInt, which MapGenerator.GenerateMap uses for the map's seed."""
+    return _to_int32(world_seed ^ (value + 2654435769 + _to_int32(world_seed << 6) + (world_seed >> 2)))
+
+
+def _tile_hash(game, tile: str) -> int:
+    """PlanetTile.GetHashCode for a saved `tile,layer`."""
+    tile_id, layer = (int(v) for v in tile.split(","))
+    grid = game.find("world/grid/layers")
+    layers = dict(zip((li.text for li in grid.iterfind("keys/li")), grid.iterfind("values/li")))
+    root_surface = layers[str(layer)].findtext("isRootSurface") == "True"
+    return _to_int32(tile_id * 397) ^ (0 if layer < 0 or root_surface else layer)
+
+
+def format_world(root) -> str:
+    """The world settings a player needs to generate a donor map."""
+    info = root.find("game/world/info")
+    return (f'World "{info.findtext("name")}": seed "{info.findtext("seedString")}", '
+            f'coverage {info.findtext("planetCoverage")}, rainfall {info.findtext("overallRainfall")}, '
+            f'temperature {info.findtext("overallTemperature")}, pollution {float(info.findtext("pollution")):g}')
+
+
 def list_maps(root) -> list[MapInfo]:
     game = root.find("game")
     map_ids, sizes = map_index(root)
     by_id = {mid: el for el, mid in map_ids.items()}
     world_objects = {f"WorldObject_{wo.findtext('ID')}": wo
                      for section in ("worldObjects/worldObjects", "pocketMaps") for wo in game.find(f"world/{section}")}
+    pocket = {f"WorldObject_{wo.findtext('ID')}": wo for wo in game.find("world/pocketMaps")}
+    world_seed = stable_string_hash(game.findtext("world/info/seedString"))
     player = _player_faction(game)
     infos = {}
     for mid, el in by_id.items():
@@ -59,6 +89,10 @@ def list_maps(root) -> list[MapInfo]:
         level = int(comp.findtext("level") or 0) if comp is not None else 0
         ground = comp.findtext("groundMap") if comp is not None else None
         info = MapInfo(mid, sizes[mid], "unknown", wo.findtext("tile") if wo is not None else "?", level=level)
+        if el.findtext("mapInfo/parent") in pocket:  # pocket maps seed from the parent, not the tile
+            info.seed = _map_seed(world_seed, int(wo.findtext("ID")))
+        elif wo is not None:
+            info.seed = _map_seed(world_seed, _tile_hash(game, wo.findtext("tile")))
         if cls == "Settlement":
             info.kind = "colony" if wo.findtext("faction") == player else f"settlement of {wo.findtext('faction')}"
             info.label = wo.findtext("nameInt") or ""
@@ -99,7 +133,7 @@ def format_maps(infos: list[MapInfo]) -> str:
         group = [m for m in info.pad_group if m != info.id]
         pads = f"  [pads with {', '.join(group)}]" if group else ""
         size = f"{info.size[0]}x{info.size[1]}"
-        lines.append(f"{'  ' * (depth + 1)}{info.id:<8} {size:>9}  {info.kind}{label}{pads}")
+        lines.append(f"{'  ' * (depth + 1)}{info.id:<8} {size:>9}  {info.kind}{label}  seed {info.seed}{pads}")
         for child in info.below:
             emit(by_id[child], depth + 1)
 
