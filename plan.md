@@ -12,7 +12,7 @@ Environment and rules are in [CLAUDE.md](CLAUDE.md). This file tracks the plan, 
 | 1. Coordinate census | ✅ done (0 unknown paths in the sample save) |
 | 2. Grid codecs + PNG rendering | ✅ done (all 72 grids in the sample save round-trip) |
 | 3. Padding only (no new content) | ✅ done (loaded in game) |
-| 4. Donor-map content for the border | ⏳ next |
+| 4. Border fill: nearest edge, then donor map | ⏳ next |
 | 5. CLI polish, safety checks, tests | ⏳ |
 
 ## Phases
@@ -63,6 +63,19 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - `verify_pad` also checks that every unselected map's subtree is unchanged.
 - Offline results on `2_2colonies_MFDRmix.rws`: `--map Map_0 --map Map_25 --map Map_27` (two groups, E10/N20), `--map Map_26` (W5/S4) and `--map Map_28` (all 10) all verify. Pad 0 on `2.rws` stays value-identical. Test saves: `out/mix_0_23_e10n20.rws`, `out/mix_26_w5s4.rws`, `out/mix_28_all10.rws`.
 - In game (user): all three test saves load with no new errors, with the right maps padded by the right sizes and the others unchanged. Shafts, lifts and stairs line up, and MultiFloors levels stay connected, including padded DeepRim maps.
+
+### 4a. Nearest-edge fill (agreed with the user, not built)
+- `extend ... --fill edge|donor`, default `edge`, replacing today's partial fill.
+- Copy from the nearest old edge cell: natural terrain, natural roofs (not `RoofConstructed`), river flow, fog, temperature, plain rock.
+- Terrain: if `underGrid` is set, the top is a built floor, so use the under terrain as the new top. Don't copy `foundationGrid`. Fertility follows from terrain.
+- `compressedThingMap` holds one thing per cell: rock, ores, chunks and others. Copy only the stone types; chunks become empty.
+- Don't copy plants, animals, gas, snow, sand, pollution or deep resources. They come back in play or aren't wanted.
+- Mined tunnels on the edge carry on into the border (accepted).
+- Soil Relocation Framework is active in the samples and adds no grid or census path, so it needs nothing.
+
+### Donor notes
+- `--donor <save> --donor-map <id>`: both needed. Users generate donor saves themselves; we only give instructions.
+- Map seed: `HashCombineInt(StableStringHash(world seedString), tile)`, not dependent on size; pocket maps use the parent ID instead of the tile. Elevation noise is sampled at raw cell coordinates. Alignment still needs a test.
 
 ### 4. Donor content
 The user generates donor saves with the same mod list. Copy terrain, grids and natural things (rock, ores, plants, filth) into the border; reassign thing IDs and bump `uniqueIDsManager`. Rock walls live in `compressedThingMapDeflate` (def `shortHash`; fine with the same mod list). Fog the new border.
