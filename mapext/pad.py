@@ -57,7 +57,8 @@ def stable_string_hash(text: str) -> int:
 
 def _short_hashes(names: tuple[str, ...]) -> set[int]:
     """Possible Def.shortHash values. The game moves a hash up when it is taken, which depends on the
-    mod list (MineableSteel is one above its plain hash in the sample), so accept a few steps."""
+    mod list (MineableSteel is one above its plain hash in the sample), so accept a few steps.
+    Only used for roofs, which have few defs."""
     out = set()
     for name in names:
         h = stable_string_hash(name)
@@ -66,26 +67,7 @@ def _short_hashes(names: tuple[str, ...]) -> set[int]:
     return out
 
 
-STONES = _short_hashes(("Sandstone", "Granite", "Limestone", "Slate", "Marble", "Vacstone", "SolidIce"))
-ORES = _short_hashes(("MineableSteel", "MineableSilver", "MineableGold", "MineableUranium", "MineablePlasteel",
-                      "MineableJade", "MineableComponentsIndustrial", "MineableObsidian", "MineableColdCrystal"))
 NATURAL_ROOFS = _short_hashes(("RoofRockThin", "RoofRockThick"))
-NEIGHBOURS = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1))
-
-
-def _stone_edge(things: np.ndarray) -> np.ndarray:
-    """`compressedThingMap` keeping only stone; an edge ore becomes a touching stone, if there is one."""
-    is_stone = np.isin(things, list(STONES))
-    out = np.where(is_stone, things, 0)
-    sz, sx = things.shape
-    for z, x in zip(*np.nonzero(np.isin(things, list(ORES)))):
-        if z in (0, sz - 1) or x in (0, sx - 1):
-            for dz, dx in NEIGHBOURS:
-                nz, nx = z + dz, x + dx
-                if 0 <= nz < sz and 0 <= nx < sx and is_stone[nz, nx]:
-                    out[z, x] = things[nz, nx]
-                    break
-    return out
 
 
 def _edge_source(label: str, path: str, arr: np.ndarray, under: np.ndarray | None) -> np.ndarray | None:
@@ -94,10 +76,8 @@ def _edge_source(label: str, path: str, arr: np.ndarray, under: np.ndarray | Non
         return np.where(under != 0, under, arr)  # under is set only below a built floor
     if label == "roofs":
         return np.where(np.isin(arr, list(NATURAL_ROOFS)), arr, 0)
-    if label == "compressedThingMap":
-        return _stone_edge(arr)
-    if label in ("fogGrid", "riverFlowMap") or path.startswith("temperatureCache/"):
-        return arr
+    if label in ("compressedThingMap", "fogGrid", "riverFlowMap") or path.startswith("temperatureCache/"):
+        return arr  # compressed things (rock, ore, chunks, ...) are copied whatever they are
     return None
 
 
@@ -315,10 +295,7 @@ def _check_border(mid: str, og: list, pg: list, old: tuple, new: tuple, pad: Pad
             good = got == np.where(under[nearest][border] != 0, under[nearest][border], edge)
         elif a.label == "roofs":
             good = (got == edge) & np.isin(got, list(NATURAL_ROOFS)) | (got == 0) & ~np.isin(edge, list(NATURAL_ROOFS))
-        elif a.label == "compressedThingMap":
-            good = np.isin(got, list(STONES)) | (got == 0)
-            good &= (got == edge) | (got == 0) | np.isin(edge, list(ORES))
-        elif a.label in ("fogGrid", "riverFlowMap") or a.path.startswith("temperatureCache/"):
+        elif a.label in ("compressedThingMap", "fogGrid", "riverFlowMap") or a.path.startswith("temperatureCache/"):
             good = got == edge
         else:
             good = got == 0

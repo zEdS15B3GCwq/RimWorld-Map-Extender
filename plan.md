@@ -66,13 +66,13 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 
 ### 4a. Nearest-edge fill ✅ built (not loaded in game yet)
 - `extend ... --fill edge|donor`, default `edge`, replacing today's partial fill.
-- Copy from the nearest old edge cell: natural terrain, natural roofs (not `RoofConstructed`), river flow, fog, temperature, plain rock.
+- Copy from the nearest old edge cell: natural terrain, natural roofs (not `RoofConstructed`), river flow, fog, temperature, compressed things.
 - Terrain: if `underGrid` is set, the top is a built floor, so use the under terrain as the new top. Don't copy `foundationGrid`. Fertility follows from terrain.
-- `compressedThingMap` holds one thing per cell: rock, ores, chunks and others. Copy only the stone types; chunks become empty.
+- `compressedThingMap` holds one thing per cell: rock, ores, chunks and others. Copy every value as it is (user decision): identifying defs depends on the mod list, and edge fill is only a fallback for when no donor map is available.
 - Don't copy plants, animals, gas, snow, sand, pollution or deep resources. They come back in play or aren't wanted.
 - Mined tunnels on the edge carry on into the border (accepted).
-- Ore on the edge becomes a stone from its 8 neighbours if there is one, otherwise empty. Smoothed floors are copied as they are. Damaged or designated rock (saved as a normal thing, so absent from the grid) isn't handled, by decision.
-- Def values are `shortHash`es, computed from def names (`pad._short_hashes`). The game bumps a hash up when it is taken, and that depends on the mod list (`MineableSteel` is one above its plain hash), so a few steps are accepted. Modded stones and ores need adding to `STONES`/`ORES`, or they stay empty.
+- Smoothed floors are copied as they are. Damaged or designated rock (saved as a normal thing, so absent from the grid) isn't handled, by decision.
+- Def values are `shortHash`es, computed from def names (`pad._short_hashes`). The game bumps a hash up when it is taken, and that depends on the mod list (`MineableSteel` is one above its plain hash), so a few steps are accepted. Only roofs use this (`NATURAL_ROOFS`); a modded natural roof would be left empty.
 - `verify_pad` checks border cells against the rules, using its own nearest-cell lookup.
 - Test saves: `out/fill_0_all20.rws`, `out/fill_23_e10n20.rws`, `out/fill_26_w5s4.rws`, `out/fill_28_all10.rws`.
 - Soil Relocation Framework is active in the samples and adds no grid or census path, so it needs nothing.
