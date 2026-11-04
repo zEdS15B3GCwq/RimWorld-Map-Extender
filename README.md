@@ -183,6 +183,67 @@ A RimWorld save is XML. Most per-cell map data, such as terrain, roofs, fog and 
 
 An unchanged save re-written by the tool is byte-identical to the original. The verifier then compares the new save against the original.
 
+## Development environment
+
+You only need this to change the tool, for example to add rules for other mods. Running it needs nothing beyond [Requirements](#requirements). The game and mod files are copyrighted, so they aren't in the repository: `include/` is git-ignored, and you fill it from your own installation.
+
+| Folder | Content | Copy from |
+|---|---|---|
+| `include/Managed/` | Game assemblies (`Assembly-CSharp.dll`, Unity modules, ...) | `RimWorldWin64_Data/Managed/` in the game folder |
+| `include/Data/` | Core and DLC defs (`Core`, `Royalty`, `Ideology`, `Biotech`, `Anomaly`, `Odyssey`) | `Data/` in the game folder |
+| `include/Mods/<packageId>-<steamId>/` | Mods whose code matters for map data (see [Mods](#mods)) | Steam Workshop folder `steamapps/workshop/content/294100/<steamId>/` |
+| `include/*.rws` | Sample saves | Your saves folder |
+
+The game and mod code was decompiled with [ILSpy](https://github.com/icsharpcode/ILSpy)'s command line tool `ilspycmd`, version 11.2.0.10050. The version is pinned in `dotnet-tools.json` as a project-local .NET tool, so nothing is installed globally. It needs the .NET SDK.
+
+```bash
+dotnet tool restore
+dotnet tool run ilspycmd -p -o include/decompiled include/Managed/Assembly-CSharp.dll
+```
+
+This writes a C# project with one folder per namespace (`Verse/`, `RimWorld/`, `RimWorld.Planet/`, ...), about 9,000 files.
+
+Each mod assembly goes into its own folder under `include/Mods-decompiled/`. The game assemblies, the mod's own assembly folder and Vanilla Expanded Framework's assemblies are passed as references, because many mods depend on it:
+
+```bash
+M=include/Mods
+O=include/Mods-decompiled
+VEF=$M/OskarPotocki.VanillaFactionsExpanded.Core-2023507013/1.6/Assemblies
+mkdir -p $O
+for dll in \
+  $M/Mlie.DeepRim-2164179860/1.6/Assemblies/DeepRim.dll \
+  $M/telardo.MultiFloors-3384660931/1.6/Assemblies/MultiFloors.dll \
+  $M/telardo.MultiFloors-3384660931/1.6/ModCompat/VEF/Assemblies/MultiFloorsVEFCompat.dll; do
+  n=$(basename $dll .dll)
+  dotnet tool run ilspycmd -p -o $O/$n -r include/Managed -r $(dirname $dll) -r $VEF $dll > /dev/null 2> $O/$n.err
+done
+```
+
+Add each mod assembly you need to the list. Mods that ship a `Source/` folder don't need decompiling.
+
+The Python environment used during development:
+
+```bash
+uv venv .venv --python 3.15
+uv pip --python .venv install -r requirements.txt
+```
+
+## Mods
+
+These mods were present during development and found to matter for extending maps. Each was checked against its code and the sample saves:
+
+| Mod | Steam id | Why it matters |
+|---|---|---|
+| [MultiFloors](https://steamcommunity.com/sharedfiles/filedetails/?id=3384660931) | 3384660931 | Each building level is a separate map sharing the ground map's coordinates, linked by stairs. All levels of a group are padded together; upper levels are filled with unsupported area (`MF_SurfaceVoid`). |
+| [DeepRim](https://steamcommunity.com/sharedfiles/filedetails/?id=2164179860) | 2164179860 | Underground layers are separate maps linked by shafts and lifts. Its world objects store the shaft position on the layer below (`holeLocation`), which shifts with that layer. |
+| [Vanilla Expanded Framework](https://steamcommunity.com/sharedfiles/filedetails/?id=2023507013) | 2023507013 | Its pipe networks (PipeSystem) and other map components are saved on each map. Their cell coordinates shift with the map like the game's own. |
+| [Some Things Float](https://steamcommunity.com/sharedfiles/filedetails/?id=2940072380) | 2940072380 | Floats items down rivers using river flow, which is why both fill modes keep flowing water and its flow in the border. |
+| [ReGrowth: Core](https://steamcommunity.com/sharedfiles/filedetails/?id=2260097569) | 2260097569 | Patches how fertility is calculated from terrain. Fertility isn't stored, so copying terrain is enough. Its farming data is keyed by zone ID, not by cell. |
+| [Adaptive Storage Framework](https://steamcommunity.com/sharedfiles/filedetails/?id=3033901359) | 3033901359 | Saves lists of integer positions; these are slots inside a storage building, not map cells, so they stay unchanged. |
+| [RimLogic](https://steamcommunity.com/sharedfiles/filedetails/?id=3750951495) | 3750951495 | Saves cell coordinates on its buildings, which shift with the map. |
+| [Rimatomics](https://steamcommunity.com/sharedfiles/filedetails/?id=1127530465) | 1127530465 | Saves cell coordinates on its buildings, which shift with the map. Its missiles' world-level target cells have no rule yet, so a save with a missile in flight stops `extend` with an unknown path. |
+| Soil Relocation Framework (Continued) | — | Makes soil removable and movable. It was active in the sample saves and adds no extra map data, so it needs no special handling. |
+
 ## Generative AI use
 
 This tool was designed and built with Claude Opus 5.5 (Anthropic) as the main engineer. Claude did most of the work:
@@ -196,6 +257,8 @@ This tool was designed and built with Claude Opus 5.5 (Anthropic) as the main en
 - **Planning:** drew up the implementation plan and kept it up to date.
 - **Implementation:** wrote the code for the serializer, grid codecs, padding, fill modes, verification and command line.
 - **Testing:** tested each step offline.
+- **Documentation:** wrote this README and the project's plan and notes.
+- **Version control:** managed the git commits.
 
 The project owner set the goals and constraints, made the design decisions, supplied the game and mod files and test saves, and tested every change in game.
 

@@ -30,4 +30,4 @@ Goal: a Python tool that enlarges an existing colony map by rewriting a RimWorld
 ## Rules
 
 - Change things only inside this project folder. No global pip/dotnet installs, and don't read the game install folder; ask the user for any game or mod files you need.
-- Never overwrite `include/2.rws`; write modified saves to `out/`.
+- Never overwrite files in `include/`; write modified files to `out/`.
