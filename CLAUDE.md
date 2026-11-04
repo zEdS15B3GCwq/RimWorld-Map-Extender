@@ -16,6 +16,7 @@ Goal: a Python tool that enlarges an existing colony map by rewriting a RimWorld
   - `python -m mapext grids <in> [--render DIR]` checks every map grid decodes/re-encodes losslessly and renders PNGs.
   - `python -m mapext maps <in>` prints the world settings, then maps per tile with seeds, how they connect and which pad together.
   - `python -m mapext extend <in> <out> --map ID [--map ID ...] [--all N | --west/--east/--south/--north N]` pads the chosen maps and their MultiFloors levels, fills the border from the nearest edge (`--fill edge`, the default) or with one material per map type (`--fill solid [--surface DEF] [--rock DEF]`), then verifies the output.
+- `README.md`: user documentation (usage, parameters, limitations). Update it when commands or rules change.
 - `plan.md`: plan, findings and progress. Keep it up to date.
 - `out/` (git-ignored): generated saves and reports.
 - `.venv/`: Python 3.15 with lxml, numpy, pillow. Manage it with `uv pip --python .venv`.
