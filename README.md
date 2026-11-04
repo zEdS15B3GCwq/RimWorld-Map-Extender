@@ -4,6 +4,10 @@ A command-line tool that makes an existing RimWorld map bigger by rewriting the 
 
 It works on RimWorld 1.6 saves and supports maps linked by the [MultiFloors](https://steamcommunity.com/sharedfiles/filedetails/?id=3384660931) and [DeepRim](https://steamcommunity.com/sharedfiles/filedetails/?id=2164179860) mods.
 
+## Disclaimer (human-written section)
+
+All the code and documentation in this project was created and managed by Claude Opus 5.5 (see Generative AI use section below). One of my main goals was to see how Opus would perform in a hands-off project. Therefore, while I have run tests in RimWorld to confirm that the tool is, indeed, working, I did not check the source code or the documentation carefully. Be aware that there may be undiscovered bugs in the code or errors in the documentation. Pull requests are welcome.
+
 ## What it does
 
 - **Pads one or more maps** by any number of cells on the west, east, south and north sides.
