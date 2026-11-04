@@ -1,4 +1,4 @@
-# Map Extender: plan and progress
+# RimWorld Map Extender: plan and progress
 
 Goal: enlarge an existing colony map offline by rewriting the save. Pad the map on any side (W/E/S/N), shift every cell reference, then fill the new border from the nearest old edge or with one material per map type.
 
@@ -19,12 +19,12 @@ Environment and rules are in [CLAUDE.md](CLAUDE.md). This file tracks the plan, 
 ## Phases
 
 ### 0. Setup + round trip ✅
-- `mapext/savefile.py`: lxml loader, plus a writer that mimics .NET XmlWriter (BOM, CRLF, tabs, `<x />`, `&gt;` escaping, CRLF in text).
-- `python -m mapext roundtrip include/2.rws out/2_roundtrip.rws` → byte-identical (load 0.2 s, write 1.3 s).
+- `rwmapext/savefile.py`: lxml loader, plus a writer that mimics .NET XmlWriter (BOM, CRLF, tabs, `<x />`, `&gt;` escaping, CRLF in text).
+- `python -m rwmapext roundtrip include/2.rws out/2_roundtrip.rws` → byte-identical (load 0.2 s, write 1.3 s).
 - Known limitation: whitespace-only text is dropped by the parser (`remove_blank_text`). The sample save has none; the roundtrip command would report it.
 
 ### 1. Coordinate census ✅
-`python -m mapext census include/2.rws out/census.md` scans the whole save for coordinate-like values (IntVec3, `IntVec3, Map_N` targets, CellRect, IntVec2, Vector3), per-cell grids (base64 blobs, one-`<li>`-per-cell lists), BoolGrid sizes and suspicious ints. It groups them by normalized path and labels each group with the first matching rule in `mapext/census.py: RULES`:
+`python -m rwmapext census include/2.rws out/census.md` scans the whole save for coordinate-like values (IntVec3, `IntVec3, Map_N` targets, CellRect, IntVec2, Vector3), per-cell grids (base64 blobs, one-`<li>`-per-cell lists), BoolGrid sizes and suspicious ints. It groups them by normalized path and labels each group with the first matching rule in `rwmapext/census.py: RULES`:
 - `shift`: add the pad offset to x/z.
 - `shift-if-map`: world-level value pointing into a map; shift when that map is the one being extended.
 - `grid`: pad a per-cell array.
@@ -37,7 +37,7 @@ Path normalization: `game/maps/li` → `MAP`; every thing (element with `<def>` 
 The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntVec3 fields on a map are handled automatically; world-level values default to `unknown`.
 
 ### 2. Grid codecs + rendering ✅
-`mapext/grids.py`, `mapext/render.py`; CLI `python -m mapext grids include/2.rws --render out/render`.
+`rwmapext/grids.py`, `rwmapext/render.py`; CLI `python -m rwmapext grids include/2.rws --render out/render`.
 - Format (`DataExposeUtility.LookByteArray`): raw Deflate (.NET `DeflateStream`, no zlib header; Python `zlib` with `wbits=-15`) → base64 → wrapped at 100 chars, with a line break before and after → `<labelDeflate>`. If deflating doesn't shrink the data, plain base64 goes in `<label>`. `GridRef.store()` renames the element when that choice changes.
 - Cell layout is inferred from the decoded length: `N*k` bytes = k-byte little-endian cells (u16 terrain/roof/snow/sand/deep resources/temperature/compressed things, u32 gas, 8 B river flow); `ceil(N/8)` bytes = bit-packed bools, LSB first (BoolGrid areas/pollution/Helixien, fog).
 - Python's deflate output is ~10% smaller than the game's, so the base64 text differs. The check is on the decoded bytes: decode → array → bytes → encode → decode must equal the original. **All 72 grids pass.**
@@ -45,7 +45,7 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - `find_grids(map)` finds grids by decoding any blob whose size fits the map's cell count; `find_cell_lists(map)` finds the `<li>`-per-cell lists (MixedBiome).
 
 ### 3. Padding only ✅
-`mapext/pad.py`; CLI: see `extend` below (originally a `pad` command).
+`rwmapext/pad.py`; CLI: see `extend` below (originally a `pad` command).
 - The census walk is now a reusable generator (`census.iter_values`). `pad_save` classifies every value with `census.RULES` first and aborts on any `unknown` path before changing anything. Then:
   - size: `mapInfo/size`, BoolGrid `mapSizeX`/`mapSizeZ`;
   - grids: terrain `topGrid`/`underGrid` and `temperatureCache` are padded by copying the edge; every other grid gets 0 (none/False). MixedBiome `<li>` list: edge copy;
@@ -57,8 +57,8 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - In-game test (user): `pad0`, `pad25`, `pad_w3s5` and `2pc_pad_e10n20` load with no new errors (the original save's errors remain); `pad1` not tried. Padding is on the right sides at the right width, including the MultiFloors level. Pawns walk into the border and haul items there. Buildings, pawns, plans and blueprints are in the right spots. The border shows stripes and no fog, as expected.
 
 ### Map selection and `extend` ✅ (confirmed in game)
-- `python -m mapext maps <save>` (`mapext/maps.py`) lists maps per tile as a tree of recorded links, with each map's padding group. The user picks from it.
-- `python -m mapext extend <in> <out> --map ID [--map ID ...] [--all N | --west/--east/--south/--north N]` replaces the `pad` command. `--map` is required and repeatable. One set of padding applies to every chosen map; per-map sizes aren't supported (decided with the user), since runs are fast and can be chained.
+- `python -m rwmapext maps <save>` (`rwmapext/maps.py`) lists maps per tile as a tree of recorded links, with each map's padding group. The user picks from it.
+- `python -m rwmapext extend <in> <out> --map ID [--map ID ...] [--all N | --west/--east/--south/--north N]` replaces the `pad` command. `--map` is required and repeatable. One set of padding applies to every chosen map; per-map sizes aren't supported (decided with the user), since runs are fast and can be chained.
 - Choosing any MultiFloors level pads its whole group, and two choices in one group count once. DeepRim maps change only when chosen, or when a level built on them is chosen.
 - `holeLocation` now shifts when its DeepRim map is padded (`shift-if-map`, resolved through the world object). A DeepRim world object with no map is left alone.
 - `verify_pad` also checks that every unselected map's subtree is unchanged.

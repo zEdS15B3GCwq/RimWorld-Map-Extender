@@ -1,4 +1,4 @@
-"""Command line entry point: python -m mapext <command> ..."""
+"""Command line entry point: python -m rwmapext <command> ..."""
 import argparse
 import sys
 import time
@@ -121,7 +121,7 @@ def cmd_extend(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(prog="mapext")
+    p = argparse.ArgumentParser(prog="rwmapext")
     sub = p.add_subparsers(required=True)
     cs = sub.add_parser("census", help="report every coordinate-like value and grid, grouped by XML path")
     cs.add_argument("input")

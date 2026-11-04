@@ -11,11 +11,11 @@ Goal: a Python tool that enlarges an existing colony map by rewriting a RimWorld
   - `Data/`: Core + DLC defs (`Core`, `Royalty`, `Ideology`, `Biotech`, `Anomaly`, `Odyssey`), ~490 MB. Grep with narrow globs.
   - `Mods/<packageId>-<steamId>/`: mods whose code may matter for map data. Some ship a `Source/` folder; use it before decompiling.
   - `Mods-decompiled/<Assembly>/`: ilspycmd output of the mods' 1.6 assemblies.
-- `mapext/`: the tool. `python -m mapext roundtrip <in> <out>` re-writes a save unchanged and checks it is byte-identical (the serializer mimics .NET XmlWriter: BOM, CRLF, tabs, `<x />`).
-  - `python -m mapext census <in> <report.md>` lists every coordinate-like value and grid by path, labelled by the rules in `mapext/census.py`.
-  - `python -m mapext grids <in> [--render DIR]` checks every map grid decodes/re-encodes losslessly and renders PNGs.
-  - `python -m mapext maps <in>` prints the world settings, then maps per tile with seeds, how they connect and which pad together.
-  - `python -m mapext extend <in> <out> --map ID [--map ID ...] [--all N | --west/--east/--south/--north N]` pads the chosen maps and their MultiFloors levels, fills the border from the nearest edge (`--fill edge`, the default) or with one material per map type (`--fill solid [--surface DEF] [--rock DEF]`), then verifies the output.
+- `rwmapext/`: the tool. `python -m rwmapext roundtrip <in> <out>` re-writes a save unchanged and checks it is byte-identical (the serializer mimics .NET XmlWriter: BOM, CRLF, tabs, `<x />`).
+  - `python -m rwmapext census <in> <report.md>` lists every coordinate-like value and grid by path, labelled by the rules in `rwmapext/census.py`.
+  - `python -m rwmapext grids <in> [--render DIR]` checks every map grid decodes/re-encodes losslessly and renders PNGs.
+  - `python -m rwmapext maps <in>` prints the world settings, then maps per tile with seeds, how they connect and which pad together.
+  - `python -m rwmapext extend <in> <out> --map ID [--map ID ...] [--all N | --west/--east/--south/--north N]` pads the chosen maps and their MultiFloors levels, fills the border from the nearest edge (`--fill edge`, the default) or with one material per map type (`--fill solid [--surface DEF] [--rock DEF]`), then verifies the output.
 - `README.md`: user documentation (usage, parameters, limitations). Update it when commands or rules change.
 - `plan.md`: plan, findings and progress. Keep it up to date.
 - `out/` (git-ignored): generated saves and reports.
