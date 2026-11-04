@@ -88,6 +88,10 @@ def cmd_extend(args: argparse.Namespace) -> int:
     if src.resolve() == dst.resolve():
         print("Refusing to overwrite the input file.", file=sys.stderr)
         return 2
+    if args.fill != "solid" and (args.surface or args.rock):
+        print("--surface and --rock only apply to --fill solid", file=sys.stderr)
+        return 2
+    fill = dict(fill=args.fill, surface=args.surface, rock=args.rock)
     a = args.all
     pad = Padding(*(a if v is None else v for v in (args.west, args.east, args.south, args.north)))
     tree = load_save(src)
@@ -97,7 +101,7 @@ def cmd_extend(args: argparse.Namespace) -> int:
         for group in select_groups(root, args.map):
             sx, sz = sizes[group[0]]
             print(f"{', '.join(group)}: {sx}x{sz} -> {sx + pad.west + pad.east}x{sz + pad.south + pad.north}")
-        report = pad_save(tree, args.map, pad)
+        report = pad_save(tree, args.map, pad, **fill)
     except (KeyError, ValueError) as e:
         print(f"error: {e.args[0]}", file=sys.stderr)
         return 2
@@ -107,7 +111,7 @@ def cmd_extend(args: argparse.Namespace) -> int:
     print(f"-> {dst}")
     if args.no_verify:
         return 0
-    problems = verify_pad(load_save(src), load_save(dst), args.map, pad)
+    problems = verify_pad(load_save(src), load_save(dst), args.map, pad, **fill)
     for p in problems:
         print("  PROBLEM:", p)
     print("verified: unselected maps unchanged, grids crop back to the original, border follows the fill rules, "
@@ -138,7 +142,10 @@ def main() -> int:
     ex.add_argument("--all", type=int, default=0, metavar="N", help="cells to add on every side not given below")
     for side in ("west", "east", "south", "north"):
         ex.add_argument(f"--{side}", type=int, metavar="N")
-    ex.add_argument("--fill", choices=["edge"], default="edge", help="how to fill the border (edge: nearest old cell)")
+    ex.add_argument("--fill", choices=["edge", "solid"], default="edge",
+                    help="edge: copy the nearest old cell; solid: one material per map type, keeping flowing rivers")
+    ex.add_argument("--surface", metavar="DEF", help="solid fill: terrain def name for surface maps, e.g. Gravel")
+    ex.add_argument("--rock", metavar="DEF", help="solid fill: rock def name for underground maps, e.g. Granite")
     ex.add_argument("--no-verify", action="store_true", help="skip re-reading the output and checking it")
     ex.set_defaults(func=cmd_extend)
     rt = sub.add_parser("roundtrip", help="load and re-write a save unchanged, then compare bytes")

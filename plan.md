@@ -65,7 +65,7 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - In game (user): all three test saves load with no new errors, with the right maps padded by the right sizes and the others unchanged. Shafts, lifts and stairs line up, and MultiFloors levels stay connected, including padded DeepRim maps.
 
 ### 4a. Nearest-edge fill ✅ built (not loaded in game yet)
-- `extend ... --fill edge|donor`, default `edge`, replacing today's partial fill.
+- `extend ... --fill edge` (default), replacing the earlier partial fill.
 - Copy from the nearest old edge cell: natural terrain, natural roofs (not `RoofConstructed`), river flow, fog, temperature, compressed things.
 - Terrain: if `underGrid` is set, the top is a built floor, so use the under terrain as the new top. Don't copy `foundationGrid`. Fertility follows from terrain.
 - `compressedThingMap` holds one thing per cell: rock, ores, chunks and others. Copy every value as it is (user decision): identifying defs depends on the mod list, and edge fill is only a fallback for when no donor map is available.
@@ -76,6 +76,16 @@ The rule table is the Phase 3 spec. Per-map defaults to "shift", so new mod IntV
 - `verify_pad` checks border cells against the rules, using its own nearest-cell lookup.
 - Test saves: `out/fill_0_all20.rws`, `out/fill_23_e10n20.rws`, `out/fill_26_w5s4.rws`, `out/fill_28_all10.rws`.
 - Soil Relocation Framework is active in the samples and adds no grid or census path, so it needs nothing.
+
+### 4b. Solid fill ✅ built (not loaded in game yet)
+- `extend ... --fill solid [--surface DEF] [--rock DEF]`. `--fill edge` stays the default and is unchanged (output byte-identical to before).
+- Map types: MultiFloors level > 0 is upper; level < 0 or a DeepRim parent is underground; everything else is surface.
+- Surface: `--surface` terrain, or the map's most common natural terrain on cells without compressed things. No roof, rock or fog.
+- Underground: `--rock`, or the map's most common `compressedThingMap` value, on the terrain most common under that rock in the save; `RoofRockThick`; fogged.
+- Upper: `MF_SurfaceVoid` only, with nothing else. The upper level's look is partly drawn from the lower level (MultiFloors draws the lower map's constructed roofs under void cells, but per the user, not beyond some distance from the stairs); not modelled.
+- Border cells next to an edge cell with river flow keep that cell's terrain and flow; still water gets the material.
+- Def names are confirmed against the save (`find_def_value`): the name's hash (or up to 3 above it) must occur on some map, otherwise the run stops with an error.
+- Test saves: `out/solid_up_0_all20.rws`, `out/solid_up_0_all20_gravel_granite.rws` (from `2_2colonies_MFDRmix_MFup.rws`), `out/solid_23_e10n20.rws`, `out/solid_26_w5s4.rws`, `out/solid_28_all10.rws`.
 
 ### Donor notes
 - `--donor <save> --donor-map <id>`: both needed. Users generate donor saves themselves; we only give instructions.

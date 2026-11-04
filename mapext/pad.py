@@ -18,7 +18,7 @@ import numpy as np
 from lxml import etree
 
 from .census import INVALID_IV3, classify_rule, iter_values, map_index
-from .grids import find_grids, pad_array
+from .grids import find_grids, map_size, pad_array
 
 
 @dataclass
@@ -38,9 +38,10 @@ class PadReport:
     maps: list = field(default_factory=list)
     actions: Counter = field(default_factory=Counter)
     unresolved: list = field(default_factory=list)  # world-level values whose map couldn't be found
+    notes: list = field(default_factory=list)
 
     def format(self) -> str:
-        lines = [f"padded maps: {', '.join(self.maps)}"]
+        lines = [f"padded maps: {', '.join(self.maps)}"] + [f"  {n}" for n in self.notes]
         lines += [f"  {k}: {v}" for k, v in sorted(self.actions.items())]
         for path, text in self.unresolved:
             lines.append(f"  unresolved map, left unchanged: {path} = {text}")
@@ -58,13 +59,139 @@ def stable_string_hash(text: str) -> int:
 def _short_hashes(names: tuple[str, ...]) -> set[int]:
     """Possible Def.shortHash values. The game moves a hash up when it is taken, which depends on the
     mod list (MineableSteel is one above its plain hash in the sample), so accept a few steps.
-    Only used for roofs, which have few defs."""
+    Alone this is a guess; `find_def_value` confirms a name against what the save contains."""
     out = set()
     for name in names:
         h = stable_string_hash(name)
         base = (abs(h) % 65535) * (-1 if h < 0 else 1) & 0xFFFF  # C# % keeps the sign, then cast to ushort
         out.update(range(base, base + 4))
     return out
+
+
+# Which grids hold each kind of def, for confirming a def name against the save.
+DEF_GRIDS = {"terrain": ("topGrid", "underGrid"), "thing": ("compressedThingMap",), "roof": ("roofs",)}
+
+
+def present_values(root) -> dict[str, set[int]]:
+    """Every def value used on any map of the save, per kind."""
+    out = {kind: set() for kind in DEF_GRIDS}
+    for m in root.find("game/maps"):
+        sx, sz = map_size(m)
+        for g in find_grids(m):
+            for kind, labels in DEF_GRIDS.items():
+                if g.label in labels and (kind != "terrain" or g.path.startswith("terrainGrid/")):
+                    out[kind].update(np.unique(g.array(sx, sz)).tolist())
+    for s in out.values():
+        s.discard(0)
+    return out
+
+
+def find_def_value(name: str, kind: str, present: dict) -> int:
+    """The save's value for def `name`; it must occur on some map, so the mod list's hash is confirmed."""
+    found = sorted(_short_hashes((name,)) & present[kind])
+    if not found:
+        raise ValueError(f"{kind} {name} isn't on any map in this save; use the def name of something that is")
+    if len(found) > 1:
+        raise ValueError(f"{kind} {name} matches several values in this save ({found}); choose another")
+    return found[0]
+
+
+@dataclass
+class SolidFill:
+    """What `--fill solid` puts in one map's border (def values from the save)."""
+    role: str           # surface, underground or upper (MultiFloors level above ground)
+    terrain: int = 0    # top terrain away from flowing water
+    rock: int = 0       # compressedThingMap value (underground)
+    roof: int = 0       # roof value (underground)
+    note: str = ""
+
+
+def map_role(root, map_el) -> str:
+    comp = next((c for c in map_el.find("components") if c.get("Class") == "MultiFloors.MF_LevelMapComp"), None)
+    level = int(comp.findtext("level") or 0) if comp is not None else 0
+    if level > 0:
+        return "upper"
+    if level < 0:
+        return "underground"
+    parent = map_el.findtext("mapInfo/parent")
+    for section in ("worldObjects/worldObjects", "pocketMaps"):
+        for wo in root.find(f"game/world/{section}"):
+            if f"WorldObject_{wo.findtext('ID')}" == parent:
+                return "underground" if wo.get("Class") == "DeepRim.UndergroundMapParent" else "surface"
+    return "surface"
+
+
+def _most_common(values: np.ndarray) -> int:
+    values = values[values != 0]
+    if values.size == 0:
+        return 0
+    v, n = np.unique(values, return_counts=True)
+    return int(v[np.argmax(n)])
+
+
+def plan_solid(root, map_ids: list[str], surface: str | None = None, rock: str | None = None) -> dict[str, SolidFill]:
+    """Choose each padded map's solid fill: named defs if given (confirmed against the save), else the
+    map's most common natural terrain (surface) or compressed thing (underground); MF_SurfaceVoid above."""
+    elements, sizes = map_index(root)
+    by_id = {mid: el for el, mid in elements.items()}
+    present = present_values(root)
+    named_terrain = find_def_value(surface, "terrain", present) if surface else None
+    named_rock = find_def_value(rock, "thing", present) if rock else None
+    plans = {}
+    for mid in map_ids:
+        sx, sz = sizes[mid]
+        arrays = {g.label: g.array(sx, sz) for g in find_grids(by_id[mid]) if not g.path.startswith("areaManager/")}
+        natural = np.where(arrays["underGrid"] != 0, arrays["underGrid"], arrays["topGrid"])
+        things = arrays["compressedThingMap"]
+        role = map_role(root, by_id[mid])
+        if role == "upper":
+            plans[mid] = SolidFill(role, terrain=find_def_value("MF_SurfaceVoid", "terrain", present), note="MF_SurfaceVoid")
+        elif role == "surface":
+            t = named_terrain or _most_common(natural[things == 0])
+            plans[mid] = SolidFill(role, terrain=t, note=surface or f"most common terrain ({t})")
+        else:
+            r = named_rock or _most_common(things)
+            if not r:
+                raise ValueError(f"{mid} has no compressed things to take a rock from; pass --rock")
+            # The terrain under that rock, from wherever it lies in the save.
+            under_rock = [natural[things == r]] if not named_rock else []
+            for m, el in by_id.items():
+                if named_rock or m != mid:
+                    msx, msz = sizes[m]
+                    a = {g.label: g.array(msx, msz) for g in find_grids(el)
+                         if g.label in ("topGrid", "underGrid", "compressedThingMap") and not g.path.startswith("areaManager/")}
+                    under_rock.append(np.where(a["underGrid"] != 0, a["underGrid"], a["topGrid"])[a["compressedThingMap"] == r])
+            t = _most_common(np.concatenate(under_rock))
+            plans[mid] = SolidFill(role, terrain=t, rock=r, roof=find_def_value("RoofRockThick", "roof", present),
+                                   note=f"{rock or f'most common rock ({r})'} on terrain {t}, thick roof, fogged")
+    return plans
+
+
+def _river(arrays: dict) -> np.ndarray | None:
+    """Cells with river flow; None if the map has no flow grid."""
+    flow = arrays.get("riverFlowMap")
+    return None if flow is None else np.any(flow != 0, axis=-1)
+
+
+def _solid_source(label: str, path: str, arr: np.ndarray, under: np.ndarray, river, plan: SolidFill):
+    """Like `_edge_source` for `--fill solid`: the material, except next to flowing water."""
+    if path.startswith("temperatureCache/"):
+        return arr
+    if plan.role == "upper":
+        return np.full_like(arr, plan.terrain) if label == "topGrid" and path.startswith("terrainGrid/") else None
+    flowing = river if river is not None else np.zeros(arr.shape[:2], bool)
+    if label == "topGrid" and path.startswith("terrainGrid/"):
+        return np.where(flowing, np.where(under != 0, under, arr), plan.terrain).astype(arr.dtype)
+    if label == "riverFlowMap":
+        return arr
+    if plan.role == "underground":
+        if label == "compressedThingMap":
+            return np.where(flowing, 0, plan.rock).astype(arr.dtype)
+        if label == "roofs":
+            return np.full_like(arr, plan.roof)
+        if label == "fogGrid":
+            return np.ones_like(arr)
+    return None
 
 
 NATURAL_ROOFS = _short_hashes(("RoofRockThin", "RoofRockThick"))
@@ -81,9 +208,8 @@ def _edge_source(label: str, path: str, arr: np.ndarray, under: np.ndarray | Non
     return None
 
 
-def _fill_grid(g, arr: np.ndarray, under: np.ndarray | None, pad: Padding) -> np.ndarray:
-    """Pad one grid: the old area unchanged, the border from the nearest edge cell or empty."""
-    source = _edge_source(g.label, g.path, arr, under)
+def _fill_grid(arr: np.ndarray, source: np.ndarray | None, pad: Padding) -> np.ndarray:
+    """Pad one grid: the old area unchanged, the border from `source`'s nearest edge cell, or empty."""
     if source is None:
         return pad_array(arr, pad.west, pad.east, pad.south, pad.north)
     out = pad_array(source, pad.west, pad.east, pad.south, pad.north, mode="edge")
@@ -194,13 +320,16 @@ def select_groups(root, map_ids: list[str]) -> list[list[str]]:
     return groups
 
 
-def pad_save(tree, map_ids: list[str], pad: Padding) -> PadReport:
+def pad_save(tree, map_ids: list[str], pad: Padding, fill: str = "edge",
+             surface: str | None = None, rock: str | None = None) -> PadReport:
     """Pad the chosen maps and their linked maps in place."""
     root = tree.getroot()
     map_els, map_sizes = map_index(root)
     by_id = {mid: el for el, mid in map_els.items()}
     padded = [m for group in select_groups(root, map_ids) for m in group]
     report = PadReport(maps=padded)
+    plans = plan_solid(root, padded, surface, rock) if fill == "solid" else {}
+    report.notes += [f"{mid} {p.role}: {p.note}" for mid, p in plans.items()]
 
     # Classify everything first so an unknown path aborts before anything changes.
     values = []
@@ -218,12 +347,17 @@ def pad_save(tree, map_ids: list[str], pad: Padding) -> PadReport:
     for mid in padded:
         sx, sz = map_sizes[mid]
         grids = find_grids(by_id[mid])
-        under = next(g.array(sx, sz) for g in grids if g.label == "underGrid")
+        arrays = {g.label: g.array(sx, sz) for g in grids if not g.path.startswith("areaManager/")}
+        under, river = arrays["underGrid"], _river(arrays)
         for g in grids:
             arr = g.array(sx, sz)
-            g.store(_fill_grid(g, arr, under, pad))
+            if fill == "solid":
+                source = _solid_source(g.label, g.path, arr, under, river, plans[mid])
+            else:
+                source = _edge_source(g.label, g.path, arr, under)
+            g.store(_fill_grid(arr, source, pad))
             grid_elements.add(g.element)
-            report.actions["grid edge" if _edge_source(g.label, g.path, arr, under) is not None else "grid empty"] += 1
+            report.actions[f"grid {fill}" if source is not None else "grid empty"] += 1
 
     for v, action in values:
         el, text = v.element, (v.element.text or "").strip()
@@ -279,19 +413,41 @@ def pad_save(tree, map_ids: list[str], pad: Padding) -> PadReport:
     return report
 
 
-def _check_border(mid: str, og: list, pg: list, old: tuple, new: tuple, pad: Padding) -> list[str]:
-    """Check border cells without using the fill code: each is its nearest edge cell or allowed empty."""
+def _check_border(mid: str, og: list, pg: list, old: tuple, new: tuple, pad: Padding,
+                  plan: SolidFill | None = None) -> list[str]:
+    """Check border cells without using the fill code: each is its nearest edge cell, the solid
+    material, or allowed empty."""
     (sx, sz), (nx, nz) = old, new
     zz, xx = np.meshgrid(np.arange(nz) - pad.south, np.arange(nx) - pad.west, indexing="ij")
     border = (zz < 0) | (zz >= sz) | (xx < 0) | (xx >= sx)
     nearest = np.clip(zz, 0, sz - 1), np.clip(xx, 0, sx - 1)
     under = next(g.array(sx, sz) for g in og if g.label == "underGrid")
+    flow = next((g.array(sx, sz) for g in og if g.label == "riverFlowMap"), None)
+    flowing = np.zeros(nearest[0][border].shape, bool) if flow is None else np.any(flow[nearest][border] != 0, axis=-1)
     problems = []
     for a, b in zip(og, pg):
         was, now = a.array(sx, sz), b.array(nx, nz)
         edge = was[nearest][border]
         got = now[border]
-        if a.label == "topGrid" and a.path.startswith("terrainGrid/"):
+        terrain = a.label == "topGrid" and a.path.startswith("terrainGrid/")
+        if plan is not None and not a.path.startswith("temperatureCache/"):
+            underground = plan.role == "underground"
+            if plan.role == "upper":
+                good = got == (plan.terrain if terrain else 0)
+            elif terrain:
+                good = np.where(flowing, got == np.where(under[nearest][border] != 0, under[nearest][border], edge),
+                                got == plan.terrain)
+            elif a.label == "riverFlowMap":
+                good = got == edge
+            elif a.label == "compressedThingMap" and underground:
+                good = got == np.where(flowing, 0, plan.rock)
+            elif a.label == "roofs" and underground:
+                good = got == plan.roof
+            elif a.label == "fogGrid" and underground:
+                good = got == True  # noqa: E712 (numpy bool array)
+            else:
+                good = got == 0
+        elif terrain:
             good = got == np.where(under[nearest][border] != 0, under[nearest][border], edge)
         elif a.label == "roofs":
             good = (got == edge) & np.isin(got, list(NATURAL_ROOFS)) | (got == 0) & ~np.isin(edge, list(NATURAL_ROOFS))
@@ -304,7 +460,8 @@ def _check_border(mid: str, og: list, pg: list, old: tuple, new: tuple, pad: Pad
     return problems
 
 
-def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding) -> list[str]:
+def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding, fill: str = "edge",
+               surface: str | None = None, rock: str | None = None) -> list[str]:
     """Check a padded save against its original; return a list of problems (empty = ok).
 
     - every padded map has its new size, and every other map's subtree is unchanged;
@@ -328,6 +485,7 @@ def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding) -> list
     if problems:
         return problems
 
+    plans = plan_solid(oroot, padded, surface, rock) if fill == "solid" else {}
     for mid in padded:
         sx, sz = osizes[mid]
         crop = (slice(pad.south, pad.south + sz), slice(pad.west, pad.west + sx))
@@ -338,7 +496,7 @@ def verify_pad(orig_tree, padded_tree, map_ids: list[str], pad: Padding) -> list
         for a, b in zip(og, pg):
             if not np.array_equal(a.array(sx, sz), b.array(*psizes[mid])[crop]):
                 problems.append(f"{mid}: grid {a.path} doesn't crop back to the original")
-        problems += _check_border(mid, og, pg, (sx, sz), psizes[mid], pad)
+        problems += _check_border(mid, og, pg, (sx, sz), psizes[mid], pad, plans.get(mid))
 
     resolve = _world_target_resolver(oroot, omaps)
     for a, b in zip(iter_values(oroot), iter_values(proot)):
